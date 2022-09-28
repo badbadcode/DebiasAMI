@@ -144,6 +144,9 @@ def start_train_normal(batch_size=64, lr_model=2e-4, epochs=1000, log_name='crl_
     ###
     # 设置超参
     w = torch.ones(len(train_dataset)).to(device)
+    # w = (pow(1/len(train_dataset),0.5) * torch.ones(len(train_dataset))).to(device) #平均权重
+
+
     model.set_causal_hyperparameter(w, lambdas)
     #
     ###
@@ -224,6 +227,8 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
     X = torch.stack([torch.tensor(x) for x in X], dim=0).float().to(device)
 
     w = torch.randn(len(X)).to(device)  # 随机权重
+    # w = (pow(1/len(X),0.5) * torch.ones(len(X))).to(device) #平均权重
+
     # print("X.size()[1]", X.size()[1]) #(100,882)-onehot
 
     if model_name == "nn":
@@ -256,7 +261,6 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
                                        path=save_model_path)
     early_stopping_JWB = EarlyStopping(patience=patience, verbose=True,
                                        path=save_model_path)
-
     for i in trange(epochs):
         loss1, pred, pred_orign, loss1_detail = train(model, train_dataloader, optimizer)  # 这一步已经对分类模型中的参数做了一个epoch的更新
         pred_orign = torch.tensor(pred_orign).to(device)
@@ -264,43 +268,54 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
         print("\n")
         print("loss1_detail", loss1_detail)
         print("loss1", loss1)
+        # results = eval(model, dev_dataloader)
+        # early_stopping_val(val_loss=results["loss"], model=model)
+        # if early_stopping_val.early_stop:
+        #     print("Early stopping for dev loss")
+        #     best_epoch = i + 1 - patience
+        #     print(f"the best epoch is {best_epoch}")
+        #     break
 
+    # results_test, results_fair = test_report(model, test_dataset, test_fair_dataset)
+
+
+    # for j in range(100):
         new_w, loss2, loss2_detail = update_w_one_step(X, Y, model.causal_hyper['w'], I, pred_orign, lambdas[1],
                                                        lambdas[2],
                                                        lambdas[5], lr_w, fem_index=fem_index, device=device)
-        if not early_stopping_JWB.early_stop:
-            model.causal_hyper['w'] = new_w
+
+        model.causal_hyper['w'] = new_w
         print("loss2_detail", loss2_detail)
         print("new_w", new_w)
-
-        results = eval(model, dev_dataloader)
-        # for k in results.keys():
-        #     writer.add_scalar(f'eval/{k}', results[k], global_step=i)
-        # writer.add_scalar('loss/model', loss1, global_step=i)
-        # writer.add_scalar('loss/model_examples_loss', loss1_detail[0], global_step=i)
-        # writer.add_scalar('loss/model_L2_loss', loss1_detail[1], global_step=i)
-        # writer.add_scalar('loss/model_L1_loss', loss1_detail[2], global_step=i)
-        #
-        # writer.add_scalar('loss/weight', loss2.item(), global_step=i)
-        # writer.add_scalar('loss/weight_examples_loss', loss2_detail[0].item(), global_step=i)
-        # writer.add_scalar('loss/weight_confounder_loss', loss2_detail[1].item(), global_step=i)
-        # writer.add_scalar('loss/weight_L2_loss', loss2_detail[2].item(), global_step=i)
-        # writer.add_scalar('loss/weight_avoid_0_loss', loss2_detail[3].item(), global_step=i)
-        early_stopping_val(val_loss=results["loss"], model=model)
-
         early_stopping_JWB(val_loss=loss2 + loss1_detail[1] + loss1_detail[2], model=model)
         best_epoch = epochs - early_stopping_JWB.counter  # np.min([early_stopping_val.counter, early_stopping_val.counter]) #一直没有停止（不超过patience的loss上升）
         if early_stopping_JWB.early_stop:
-            print(f"Early stopping for weight loss")
+            print(f"Early stopping for weight loss in No.{i} training")
             best_epoch = i + 1 - patience
+            print(f"the best epoch is {best_epoch} in No.{i} training")
             break
+
+    # for k in results.keys():
+    #     writer.add_scalar(f'eval/{k}', results[k], global_step=i)
+    # writer.add_scalar('loss/model', loss1, global_step=i)
+    # writer.add_scalar('loss/model_examples_loss', loss1_detail[0], global_step=i)
+    # writer.add_scalar('loss/model_L2_loss', loss1_detail[1], global_step=i)
+    # writer.add_scalar('loss/model_L1_loss', loss1_detail[2], global_step=i)
+    #
+    # writer.add_scalar('loss/weight', loss2.item(), global_step=i)
+    # writer.add_scalar('loss/weight_examples_loss', loss2_detail[0].item(), global_step=i)
+    # writer.add_scalar('loss/weight_confounder_loss', loss2_detail[1].item(), global_step=i)
+    # writer.add_scalar('loss/weight_L2_loss', loss2_detail[2].item(), global_step=i)
+    # writer.add_scalar('loss/weight_avoid_0_loss', loss2_detail[3].item(), global_step=i)
+
+
         # elif early_stopping_weight.early_stop and early_stopping_weight.early_stop:
         #     print(f"Early stopping for dev loss")
         #     best_epoch = i + 1 - patience
         #     break
 
-    print(f"the best epoch is {best_epoch}")
-    writer.add_text('loss/weight', str(model.causal_hyper['w'] ** 2))
+    # print(f"the best epoch is {best_epoch}")
+    # writer.add_text('loss/weight', str(model.causal_hyper['w'] ** 2))
 
     results = {}
     results["model_name"] = model_name
@@ -382,7 +397,7 @@ lambdas = {
     2: 1,  # w l2
     3: 1e-5,  # f l2
     4: 1e-5,  # f l1
-    5: 1e-3  # avoid 0
+    5: 1  # avoid 0
 }
 
 # 随机种子
@@ -390,11 +405,11 @@ seed = 42
 # 批大小
 batch_size = 100
 # 批数
-epochs = 100
+epochs = 500
 # 模型学习率，这里就是神经网络的模型参数
-lr = 1e-2
+lr = 1e-3
 # w学习率
-lr_w = 1e-2  # 希望这个先停止，所以学习率设置的稍微大一些。
+lr_w = 1e-3  # 希望这个先停止，所以学习率设置的稍微大一些。
 
 patience = 5
 
@@ -408,7 +423,7 @@ clip = None
 
 if __name__ == '__main__':
     for vec_type in ["onehot", "tfidf", "bert"]:
-        vec_type = "tfidf"
+        # vec_type =
         print(vec_type)
 
         train_dataset, test_dataset, test_fair_dataset = get_sentence_vecs(vec_type, path=Config.VEC_DIR)
@@ -422,7 +437,7 @@ if __name__ == '__main__':
 
         datasets = [train_dataset, dev_dataset, test_dataset, test_fair_dataset]
 
-        for model_name in ["lr", "nn"]:
+        for model_name in ["nn"]:
             print(model_name)
             start_train_reweight(epochs=epochs,
                                  lr_model=lr,

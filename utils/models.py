@@ -44,8 +44,9 @@ class Vector_NN_Classifier(nn.Module):
 
             W = w * w #为了保证权重非负
 
-            W_selected = torch.gather(W, 0, x_indexes) #sample weight 有什么必要?
-
+            # print("x_indexes", x_indexes)
+            W_selected = torch.gather(W, 0, x_indexes) #sample weight 选择这个batch里的样本应有的权重
+            # print("W_selected",W_selected)
             # log_expYX = (1 - labels) * prediction[:, 0] + (labels) * prediction[:, 1]
             # log_expYX = torch.log(1 + torch.exp(log_expYX))
             # part1 = Variable(W_selected * log_expYX, requires_grad=True)
@@ -53,9 +54,11 @@ class Vector_NN_Classifier(nn.Module):
 
             part1 = (labels) * torch.log(prediction[:, 1]) + (1 - labels) * torch.log(prediction[:, 0])
             part1 = -part1
-
+            # print("part1",part1)
             part1 = W_selected * part1
+
             part1 = part1.sum()
+            # print("sumed part1",part1)
 
             # print('loss:', loss)
             loss = part1 + lambda3 * L2 + lambda4 * L1 #这里是为了更新分类模型参数的loss，也就是说论文中的公式5
@@ -145,9 +148,9 @@ class Vector_LogisticNet_Classifier(torch.nn.Module):
 
 
             W = w * w #为了保证权重非负
-
+            # print("x_indexes", x_indexes)
             W_selected = torch.gather(W, 0, x_indexes) #sample weight 有什么必要?
-
+            # print("W_selected", W_selected)
             # log_expYX = (1 - labels) * prediction[:, 0] + (labels) * prediction[:, 1]
             # log_expYX = torch.log(1 + torch.exp(log_expYX))
             # part1 = Variable(W_selected * log_expYX, requires_grad=True)
@@ -155,10 +158,11 @@ class Vector_LogisticNet_Classifier(torch.nn.Module):
 
             part1 = (labels) * torch.log(prediction[:, 1]) + (1 - labels) * torch.log(prediction[:, 0])
             part1 = -part1
+            # print("part1", part1)
 
             part1 = W_selected * part1
             part1 = part1.sum()
-
+            # print("sum_part1", part1)
             # print('loss:', loss)
             loss = part1 + lambda3 * L2 + lambda4 * L1 #这里是为了更新分类模型参数的loss，也就是说论文中的公式5
             # print('lambda3:', lambda3, 'lambda4:', lambda4)
