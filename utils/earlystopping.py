@@ -39,6 +39,7 @@ class EarlyStopping:
         elif score < self.best_score + self.delta:#当前loss比之前要大
             self.counter += 1
             self.trace_func(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+            self.trace_func(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}).  Saving model ...')
             if self.counter >= self.patience:
                 self.early_stop = True
         else:

@@ -169,7 +169,7 @@ class Vector_LogisticNet_Classifier(torch.nn.Module):
             # print('L2:', L2, 'L1:', L1)
             return {
                 'loss': loss,
-                'loss_detail': torch.tensor([part1, L2, L1]),
+                'loss_detail': torch.tensor([part1, lambda3 * L2, lambda4 * L1]),
                 'prediction': prediction.argmax(1),
                 'pred_orign': prediction
             }

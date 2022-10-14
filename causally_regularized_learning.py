@@ -158,7 +158,7 @@ def start_train_normal(batch_size=64, lr_model=2e-4, epochs=1000, log_name='crl_
 
     for i in trange(epochs):
         loss1, pred, pred_orign, loss1_detail = train(model, train_dataloader, optimizer)
-        print("loss1_detail", loss1_detail)
+        print(f"{model_name}-{vec_type}-{log_name} loss1_detail", loss1_detail)
         print("loss1", loss1)
         results = eval(model, dev_dataloader)
 
@@ -260,13 +260,13 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
     early_stopping_val = EarlyStopping(patience=patience, verbose=True,
                                        path=save_model_path)
     early_stopping_JWB = EarlyStopping(patience=patience, verbose=True,
-                                       path=save_model_path)
+                                       path=save_model_path,delta=5)
     for i in trange(epochs):
         loss1, pred, pred_orign, loss1_detail = train(model, train_dataloader, optimizer)  # 这一步已经对分类模型中的参数做了一个epoch的更新
         pred_orign = torch.tensor(pred_orign).to(device)
         # print("pred_orign",pred_orign.size()) #torch.Size([3200, 2])
         print("\n")
-        print("loss1_detail", loss1_detail)
+        print(f"{model_name}-{vec_type}-{log_name} loss1_detail", loss1_detail)
         print("loss1", loss1)
         # results = eval(model, dev_dataloader)
         # early_stopping_val(val_loss=results["loss"], model=model)
@@ -280,16 +280,23 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
 
 
     # for j in range(100):
+
         new_w, loss2, loss2_detail = update_w_one_step(X, Y, model.causal_hyper['w'], I, pred_orign, lambdas[1],
                                                        lambdas[2],
                                                        lambdas[5], lr_w, fem_index=fem_index, device=device)
 
         model.causal_hyper['w'] = new_w
+
         print("loss2_detail", loss2_detail)
         print("new_w", new_w)
+        print(np.argmax(new_w.detach().cpu().numpy()))
+
+        results = eval(model, dev_dataloader)
+        early_stopping_val(val_loss=results["loss"], model=model)
+        print("\n")
         early_stopping_JWB(val_loss=loss2 + loss1_detail[1] + loss1_detail[2], model=model)
-        best_epoch = epochs - early_stopping_JWB.counter  # np.min([early_stopping_val.counter, early_stopping_val.counter]) #一直没有停止（不超过patience的loss上升）
-        if early_stopping_JWB.early_stop:
+        # best_epoch = epochs - early_stopping_JWB.counter  # np.min([early_stopping_val.counter, early_stopping_val.counter]) #一直没有停止（不超过patience的loss上升）
+        if early_stopping_JWB.early_stop:# or early_stopping_val.early_stop:
             print(f"Early stopping for weight loss in No.{i} training")
             best_epoch = i + 1 - patience
             print(f"the best epoch is {best_epoch} in No.{i} training")
@@ -409,7 +416,7 @@ epochs = 500
 # 模型学习率，这里就是神经网络的模型参数
 lr = 1e-3
 # w学习率
-lr_w = 1e-3  # 希望这个先停止，所以学习率设置的稍微大一些。
+lr_w = 1e-3 # 希望这个先停止，所以学习率设置的稍微大一些。
 
 patience = 5
 
