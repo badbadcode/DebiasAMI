@@ -42,3 +42,34 @@ trainer = Trainer(
 
 trainer.train()
 trainer.save_model(f'saved_models/lm/{data_name}')
+
+# model = BertForMaskedLM.from_pretrained(f'saved_model/lm/{data_name}')
+# # model = BertForMaskedLM.from_pretrained('bert-base-uncased')
+# model.cuda()
+#
+# text = "He is such a [MASK] ."
+# tokens = tokenizer.encode(text)
+# tokens_tensor = torch.tensor([tokens])
+# tokens_tensor = tokens_tensor.to('cuda')
+# with torch.no_grad():
+#     outputs = model(tokens_tensor)
+#     predictions = outputs[0]
+#
+# print(predictions.size())  # torch.Size([1, 11, 30522])
+#
+#
+# predicted_index = torch.argmax(predictions[0, 6]).item()
+# predicted_token = tokenizer.convert_ids_to_tokens([predicted_index])[0]
+# print(predicted_token) # "a"
+# print(torch.max(predictions[0,6]).item())
+
+# top_k = 5
+# #probs = torch.nn.functional.softmax(predictions[0, masked_index], dim=-1)
+# top_k_values, top_k_indices = torch.topk(predictions[0, 5], top_k, sorted=True)
+#
+# for i, pred_idx in enumerate(top_k_indices):
+#     pred_idx = pred_idx.item()
+#     predicted_token = tokenizer.convert_ids_to_tokens([pred_idx])[0]
+#     token_weight = top_k_values[i].item()
+#     print(predicted_token)
+#     print(token_weight)
