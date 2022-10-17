@@ -1,6 +1,6 @@
 import joblib
 from my_utils import *
-from config import Config
+from utils.config import Config
 import pickle
 import pandas as pd
 model_name="LR"

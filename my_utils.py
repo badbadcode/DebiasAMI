@@ -1,11 +1,8 @@
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, auc, roc_auc_score
-from config import Config
+from utils.config import Config
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer,CountVectorizer
-from sklearn import preprocessing
-import numpy as np
 import os
 
 def load_split_train():

@@ -5,10 +5,14 @@ import os
 import pandas as pd
 import torch
 from datasets import Dataset
-from config import Config
+from utils.config import Config
 import pickle
 import numpy as np
 import random
+from utils.models import BertFT
+from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
+from transformers import AutoTokenizer
+from sklearn.model_selection import train_test_split
 
 
 def SetupSeed(seed):
@@ -21,6 +25,91 @@ def SetupSeed(seed):
     random.seed(seed)  # Python random module.
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
+
+def getDevice():
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        print('There are %d GPU(s) available.' % torch.cuda.device_count())
+        print('using the GPU:', torch.cuda.get_device_name(0))
+    else:
+        print('No GPU , use the CPU instead.')
+        device = torch.device("cpu")
+    return device
+
+def getModel(model_shortcut,data_name, seed):
+
+    if model_shortcut == "b-ft":
+        model = BertFT(data_name=data_name, seed=seed)
+    if model.device == torch.device("cuda"):
+        model.cuda()
+    # if model_shortcut == "bilstm":
+    #     model = SentiBiLSTMAtt(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data])
+    # elif model_shortcut == "cbilstm":
+    #     model = CausalSentiBiLSTMAtt(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data],mode=Config.MODE[model_shortcut])
+    #     # print("model.causal_t.Wy.weight", model.causal_t.Wy.weight)  # changed when it wants to change
+    # elif model_shortcut == "b":
+    #     model = SentiBERT(num_labels=Config.NUM_LABELS[train_data])
+    # elif model_shortcut == "cb":
+    #     model = CausalSentiBERT(num_labels=Config.NUM_LABELS[train_data], mode=Config.MODE[model_shortcut])
+    #     # print("model.causal_t.Wy.weight", model.causal_t.Wy.weight)  # changed when it wants to change
+    # elif model_shortcut == "panet":
+    #     model = PANet(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data])
+
+    return model
+
+def getTrainDevTensor(sentences, labels, model):
+    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+    # print("sentences", len(sentences),sentences[:5])
+    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
+    input_ids = torch.tensor(encoded_inputs["input_ids"])
+    attention_masks = torch.tensor(encoded_inputs["attention_mask"])
+
+    tensor_dataset = TensorDataset(input_ids, attention_masks, labels)
+    return tensor_dataset
+
+
+def getTrainDevLoader(model,data_name):
+
+    data_fp = Config.DATA_DIC[data_name]["train"]
+    df = pd.read_csv(data_fp, sep="\t", header=0)
+    sentences = list(df['cleaned_text'].values.astype('U'))
+    # print(sentences[:5])
+    labels = torch.tensor(df["misogynous"].tolist())
+
+    Sen_train, Sen_dev, Lbl_train, Lbl_dev = train_test_split(sentences, labels, test_size=0.2)
+    # print(Sen_dev[:5])
+    train_data = getTrainDevTensor(Sen_train, Lbl_train, model)
+    dev_data = getTrainDevTensor(Sen_dev, Lbl_dev, model)
+
+    train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=model.batch_size)
+    dev_dataloader = DataLoader(dev_data, sampler=SequentialSampler(dev_data), batch_size=model.batch_size)
+
+    return train_dataloader, dev_dataloader
+
+
+def getTestLoader(model, data_name, test_name):
+
+    Has_label = Config.HAS_LABELS_TEST[data_name][test_name]
+
+    data_fp = Config.DATA_DIC[data_name][test_name]
+    df = pd.read_csv(data_fp, sep="\t", header=0)
+    sentences = list(df['cleaned_text'].values.astype('U'))
+
+    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
+    input_ids = torch.tensor(encoded_inputs["input_ids"])
+    attention_masks = torch.tensor(encoded_inputs["attention_mask"])
+
+    if Has_label:
+        labels = torch.tensor(df["misogynous"].tolist())
+        test_data = TensorDataset(input_ids, attention_masks, labels)
+    else:
+        test_data = TensorDataset(input_ids, attention_masks)
+
+    test_dataloader = DataLoader(test_data, sampler=SequentialSampler(test_data), batch_size=model.batch_size)
+
+    return test_dataloader
+
 
 def cal_Jbs(X, w, I,fem_index):
     '''
@@ -356,3 +445,4 @@ if __name__ == '__main__':
     print(losses[:3], losses[-3:])
     print((w * w)[:10])
     print((w * w).sum())
+

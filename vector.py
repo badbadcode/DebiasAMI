@@ -2,15 +2,9 @@
 将训练集、测试集、公平测试集的向量以不同的编码形式保存下来
 '''
 import torch
-from torch import nn
 from transformers import BertForSequenceClassification
-from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AutoTokenizer
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer,CountVectorizer
-from config import Config
 import numpy as np
-import os
 from my_utils import *
 from tqdm import tqdm
 import pickle

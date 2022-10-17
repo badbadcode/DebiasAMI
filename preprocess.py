@@ -1,15 +1,13 @@
 # the text in social media platform is irregular
 
-import os, csv, codecs, numpy as np, pandas as pd
+import pandas as pd
 import re
 from nltk.stem.wordnet import WordNetLemmatizer
 from nltk.corpus import stopwords
-from nltk.tokenize import RegexpTokenizer
 from nltk.tokenize import TweetTokenizer
 import preprocessor as p
-import sys
 from tqdm import tqdm
-from config import Config
+from utils.config import Config
 
 
 def remove_urls(vTEXT):

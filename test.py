@@ -2,7 +2,7 @@
 test
 '''
 from my_utils import *
-from config import Config
+from utils.config import Config
 import joblib
 import pickle
 

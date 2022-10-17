@@ -8,11 +8,11 @@ from transformers import AdamW
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.model_selection import train_test_split
 import pandas as pd
-from config import Config
+from utils.config import Config
 import os
 
 from utils.models import Vector_NN_Classifier, Vector_LogisticNet_Classifier
-from utils.utils import SetupSeed, update_w_one_step, get_sentence_vecs, getGenderIndex
+from utils.funcs import SetupSeed, update_w_one_step, get_sentence_vecs, getGenderIndex
 from utils.earlystopping import EarlyStopping
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
