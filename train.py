@@ -1,4 +1,4 @@
-from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput
+from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput, check_dir
 from utils.earlystopping import EarlyStopping
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -44,6 +44,7 @@ def eval(model,dev_dataloader):
 
 
 def train(model, train_dataloader):
+
     optimizer = AdamW(model.parameters(),
                           lr=model.lr,  # args.learning_rate - default is 5e-5, our notebook had 2e-5
                           eps=1e-8,  # args.adam_epsilon  - default is 1e-8.
@@ -110,17 +111,24 @@ def predictDeltaY(model):
 
     new_input_ids, new_attention_masks, new_labels = getMaskedInput(model, data_name)
 
+
     deltaY_sens = []
 
     with torch.no_grad():
-        for step, batch in tqdm(enumerate(zip(new_input_ids, new_attention_masks, new_labels))):
-            b_input_ids = batch[0].to(model.device)
-            b_input_mask = batch[1].to(model.device)
-            b_labels = batch[2].to(model.device)
+        for step, (id,mask,label) in tqdm(enumerate(zip(new_input_ids, new_attention_masks, new_labels))):
+
+            b_input_ids = torch.tensor(id).to(model.device)
+            b_input_mask = torch.tensor(mask).to(model.device)
+            b_labels = torch.tensor(label).to(model.device)
 
             dev_probs2_batch, dev_loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
-            dev_probs1_batch = dev_probs2_batch([0,1],b_labels)
-            deltaY_sens.append((torch.ones_like(dev_probs1_batch)-dev_probs1_batch).tolist())
+            # print(dev_probs2_batch)
+            # print(b_labels)
+            dev_probs0_batch = dev_probs2_batch[range(b_labels.size()[0]),1-b_labels]
+            # print(dev_probs1_batch)
+            dev_probs0_batch = dev_probs0_batch.detach().cpu()
+            deltaY_sens.append(dev_probs0_batch.tolist())
+    # deltaY_sens = np.asarray(deltaY_sens)
 
     return deltaY_sens
 
@@ -135,20 +143,22 @@ if __name__=="__main__":
     SetupSeed(seed)
 
     model = getModel(model_shortcut, data_name, seed)
+    check_dir(model.save_model_path)
     train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
     test_dataloader = getTestLoader(model, data_name, "test")
     unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
 
 
-    train(model,train_dataloader)
+    # train(model,train_dataloader)
     print("training is finished")
     model.load_state_dict(torch.load(model.save_model_path))
     if model.device == torch.device("cuda"):
         model.cuda()
-    _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
-    print("test_acc", test_acc,"test_f1",test_f1)
-
-    _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
-    print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
+    # _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
+    # print("test_acc", test_acc,"test_f1",test_f1)
+    #
+    # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
+    # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
 
     deltaY_sens = predictDeltaY(model)
+    np.save(f"saved_model/AMI/deltaY_sens.npy", deltaY_sens)

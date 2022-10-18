@@ -252,6 +252,8 @@ class BertFT(nn.Module):
 
         logits = self.ffn(z0)
         probs = nn.functional.softmax(logits,dim=1)
+        # print(probs.size())  # torch.Size([28, 2])
+        # print(labels.size())  # torch.Size([28])
         loss = nn.functional.cross_entropy(probs, labels)
         return probs,loss
 

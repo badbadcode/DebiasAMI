@@ -13,7 +13,7 @@ from utils.models import BertFT
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AutoTokenizer
 from sklearn.model_selection import train_test_split
-from train_lm import mask_all,mask_i
+from train_lm import mask_all
 
 
 def SetupSeed(seed):
@@ -81,7 +81,7 @@ def getMaskedInput(model, data_name):
     attention_masks = encoded_inputs["attention_mask"]
 
     new_input_ids,new_attention_masks = mask_all(input_ids,attention_masks) #[num_samples, seq_len-2, seq_len]
-    new_labels = [[label]*len(id) for id,label in zip(input_ids,labels)]
+    new_labels = [[label]*(sum(mask)-2) for mask,label in zip(attention_masks,labels)]
 
     # flat_input_ids = sum(new_input_ids,[])
     # flat_attention_masks = sum(new_attention_masks, [])
@@ -134,6 +134,14 @@ def getTestLoader(model, data_name, test_name):
     test_dataloader = DataLoader(test_data, sampler=SequentialSampler(test_data), batch_size=model.batch_size)
 
     return test_dataloader
+
+def check_dir(vec_fp):
+    dir = "/".join(vec_fp.split("/")[:-1])
+    if not os.path.exists(dir):
+        print("prepare makingdirs", dir)
+        os.makedirs(dir)
+    else:
+        pass
 
 
 def cal_Jbs(X, w, I,fem_index):
