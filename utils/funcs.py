@@ -13,6 +13,7 @@ from utils.models import BertFT
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AutoTokenizer
 from sklearn.model_selection import train_test_split
+from train_lm import mask_all,mask_i
 
 
 def SetupSeed(seed):
@@ -66,6 +67,30 @@ def getTrainDevTensor(sentences, labels, model):
 
     tensor_dataset = TensorDataset(input_ids, attention_masks, labels)
     return tensor_dataset
+
+def getMaskedInput(model, data_name):
+    data_fp = Config.DATA_DIC[data_name]["train"]
+    df = pd.read_csv(data_fp, sep="\t", header=0)
+    sentences = list(df['cleaned_text'].values.astype('U'))
+    # print(sentences[:5])
+    labels = torch.tensor(df["misogynous"].tolist())
+    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+    # print("sentences", len(sentences),sentences[:5])
+    encoded_inputs = tokenizer(sentences, padding='max_length',truncation=True, max_length=model.max_len)
+    input_ids = encoded_inputs["input_ids"]
+    attention_masks = encoded_inputs["attention_mask"]
+
+    new_input_ids,new_attention_masks = mask_all(input_ids,attention_masks) #[num_samples, seq_len-2, seq_len]
+    new_labels = [[label]*len(id) for id,label in zip(input_ids,labels)]
+
+    # flat_input_ids = sum(new_input_ids,[])
+    # flat_attention_masks = sum(new_attention_masks, [])
+    # flat_labels = sum(new_labels, [])
+
+    # tensor_dataset = TensorDataset(new_input_ids, new_attention_masks,new_labels)
+
+    return new_input_ids, new_attention_masks,new_labels
+
 
 
 def getTrainDevLoader(model,data_name):

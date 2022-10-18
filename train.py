@@ -1,4 +1,4 @@
-from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader
+from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput
 from utils.earlystopping import EarlyStopping
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm
@@ -101,22 +101,32 @@ def train(model, train_dataloader):
     print("Best epoch is :", best_epoch)
 
 
-def predict(model):
+def predictDeltaY(model):
     '''
     有的unbiased测试集，我们没有标签，评估的方式也不是通过标签，而是group之间的差异
     :param model:
     :return:
     '''
-    print("")
-    print("========================Evaluate on the Best Model=====================")
-    print("model_name--", model_shortcut, "  train data--", model.data_name, "  lr--", model.lr, "  random_seed--", seed,)
+
+    new_input_ids, new_attention_masks, new_labels = getMaskedInput(model, data_name)
+
+    deltaY_sens = []
+
+    with torch.no_grad():
+        for step, batch in tqdm(enumerate(zip(new_input_ids, new_attention_masks, new_labels))):
+            b_input_ids = batch[0].to(model.device)
+            b_input_mask = batch[1].to(model.device)
+            b_labels = batch[2].to(model.device)
+
+            dev_probs2_batch, dev_loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
+            dev_probs1_batch = dev_probs2_batch([0,1],b_labels)
+            deltaY_sens.append((torch.ones_like(dev_probs1_batch)-dev_probs1_batch).tolist())
+
+    return deltaY_sens
 
 
-    # load the last checkpoint with the best model and save the performance
-    model.load_state_dict(torch.load(model.save_model_path))
 
 # 当该module被其它module 引入使用时，其中的"if __name__=="__main__":"所表示的Block不会被执行
-
 if __name__=="__main__":
 
     data_name = "AMI"
@@ -128,6 +138,8 @@ if __name__=="__main__":
     train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
     test_dataloader = getTestLoader(model, data_name, "test")
     unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
+
+
     train(model,train_dataloader)
     print("training is finished")
     model.load_state_dict(torch.load(model.save_model_path))
@@ -138,3 +150,5 @@ if __name__=="__main__":
 
     _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
     print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
+
+    deltaY_sens = predictDeltaY(model)
