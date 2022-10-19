@@ -80,14 +80,13 @@ def pred(new_sens_ids,new_sens_label):
             # print("model predicts:", tokenizer.convert_ids_to_tokens(torch.argmax(probs[0][1],dim=-1).item()))
             # print("the prob of the real masked word :", probs[0][1][label[0][1]])
 
-            probs = probs.detach().cpu() #(seq_len-2,seq_len,V)
+            probs = probs.detach().cpu().numpy() #(seq_len-2,seq_len,V)
             deltaT = []
             for i in range(len(label)):
                 prob = probs[i][i+1][label[i][i+1]] #[CLS]
-
-                deltaT.append(1-prob.item())
+                deltaT.append(1-prob)
             deltaT_sens.append(deltaT)
-        break
+
     print(deltaT_sens[:2])
     return deltaT_sens
 
@@ -107,7 +106,7 @@ if __name__ == '__main__':
     dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
     attention_mask = encoded_inputs['attention_mask'] #label [num_samples, seq_len]
 
-    train(dataset_id)
+    # train(dataset_id)
 
     new_sens_ids,_ = mask_all(dataset_id,attention_mask)  # [num_samples, seq_len-2, seq_len]
     new_sens_label = [[x]*(len(x)-2) for x in dataset_id]  # [num_samples, seq_len-2, seq_len] need - [CLS],[SEP]
