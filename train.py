@@ -161,4 +161,4 @@ if __name__=="__main__":
     # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
 
     deltaY_sens = predictDeltaY(model)
-    np.save(f"saved_model/AMI/deltaY_sens.npy", deltaY_sens)
+    np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)

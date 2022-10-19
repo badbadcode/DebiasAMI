@@ -114,7 +114,8 @@ if __name__ == '__main__':
 
 
     deltaT_sens = pred(new_sens_ids,new_sens_label)
-    np.save(f"saved_model/lm/AMI/deltaT_sens.npy", deltaT_sens)
+    print(deltaT_sens)
+    np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaT_sens)
 
 # print(predictions.size())  # torch.Size([1, 11, 30522]) will add [cls]/[sep] automatically
 #
