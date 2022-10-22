@@ -62,7 +62,7 @@ def train(model, train_dataloader):
                                    path=model.save_model_path)  # if valid_loss didn't improve for patience epochs, we stop and save the best one.
 
 
-    for epoch_i in range(0, model.epochs):
+    for epoch_i in tqdm(range(0, model.epochs)):
 
         print("")
         print('================ Epoch {:} / {:} ================='.format(epoch_i + 1, model.epochs))
@@ -119,7 +119,7 @@ def predictDeltaY(model):
     deltaY_sens = []
 
     with torch.no_grad():
-        for step, (id,mask,label) in tqdm(enumerate(zip(new_input_ids, new_attention_masks, new_labels))):
+        for step, (id,mask,label) in enumerate(tqdm(zip(new_input_ids, new_attention_masks, new_labels))):
 
             b_input_ids = torch.tensor(id).to(model.device)
             b_input_mask = torch.tensor(mask).to(model.device)
@@ -141,7 +141,7 @@ def predictDeltaY(model):
 # 当该module被其它module 引入使用时，其中的"if __name__=="__main__":"所表示的Block不会被执行
 if __name__=="__main__":
 
-    data_name = "AMI"
+    data_name = "IMDB-L"
     model_shortcut = "b-ft"
     seed = 42
     SetupSeed(seed)
@@ -151,7 +151,7 @@ if __name__=="__main__":
 
     train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
     test_dataloader = getTestLoader(model, data_name, "test")
-    unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
+    # unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
 
     if not os.path.exists(model.save_model_path):
         train(model,train_dataloader)
@@ -162,8 +162,8 @@ if __name__=="__main__":
 
     if model.device == torch.device("cuda"):
         model.cuda()
-    # _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
-    # print("test_acc", test_acc,"test_f1",test_f1)
+    _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
+    print("test_acc", test_acc,"test_f1",test_f1)
     #
     # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
     # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)

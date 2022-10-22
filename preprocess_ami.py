@@ -243,7 +243,7 @@ def clean(comment, remove_stopwords=True, remove_punctuations=False):
         return clean_sent.strip()
 
 def clean_split(split):
-    path = Config.OLD_DATA_DIC[split]
+    path = Config.OLD_DATA_DIC["AMI"][split]
 
     if split == "unbiased":
         pd_train_binary = pd.read_csv(path, sep='\t',names=["text","misogynous"])

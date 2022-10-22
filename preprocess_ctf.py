@@ -18,7 +18,8 @@ def load_pkl(path):
     return data
 
 
-imdb_l = load_pkl(r"data/IMDB-L/ori/ds_imdb_para.pkl")
-imdb_s = load_pkl(r"data/IMDB-S/ori/ds_imdb_sent.pkl")
-kindle = load_pkl(r"data/KINDLE/ori/ds_kindle.pkl")
+# imdb_l = load_pkl(r"data/IMDB-L/ori/ds_imdb_para.pkl")
+# imdb_s = load_pkl(r"data/IMDB-S/ori/ds_imdb_sent.pkl")
+# kindle = load_pkl(r"data/KINDLE/ori/ds_kindle.pkl")
+# ami_ds = load_pkl("/data/AMI/ori/ds_ami.pkl")
 

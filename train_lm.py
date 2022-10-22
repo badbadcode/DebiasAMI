@@ -8,39 +8,18 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
-import copy
 import os
-
-from utils.funcs import load_pkl
-from utils.config import Config
-
 import pickle
 
 
-def mask_all(dataset_id, attention_mask):
-    new_sens_ids = []
-    new_sens_att = []
-    for old_sen_id,mask in zip(dataset_id,attention_mask):
-        sen_ids = []
-        sen_masks = []
-        seq_len = sum(mask)
-        for i in range(1,seq_len-1):
-            new_sen_id = copy.deepcopy(old_sen_id)
-            new_sen_id[i] = 103
-            sen_ids.append(new_sen_id)
-            sen_masks.append(mask)
-
-        new_sens_ids.append(sen_ids)
-        new_sens_att.append(sen_masks)
-
-    return new_sens_ids, new_sens_att
+from utils.funcs import load_pkl, mask_all
+from utils.config import Config
+from utils.data_class import Counterfactual
 
 
 def organize_data(df):
 
     sentences = list(df['text'].values.astype('U'))
-
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
     dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
@@ -85,7 +64,7 @@ def pred(new_sens_ids,new_sens_label):
     model = BertForMaskedLM.from_pretrained(model_path)
     model.cuda()
     deltaT_sens = []
-    for j,(ids,label) in tqdm(enumerate(zip(new_sens_ids,new_sens_label))):
+    for j,(ids,label) in enumerate(tqdm(zip(new_sens_ids,new_sens_label))):
         # (seq_len-2,seq_len)
         tokens_tensor = torch.tensor(ids)
         tokens_tensor = tokens_tensor.to('cuda')
@@ -116,14 +95,19 @@ def pred(new_sens_ids,new_sens_label):
 
 if __name__ == '__main__':
     # import data and process the data into token numbers
-    data_name = "AMI"
+    data_name = "IMDB-L"
     model_path = f'saved_model/lm/{data_name}'
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
     ds = load_pkl(Config.DATA_DIC[data_name])
     df = ds.train
     dataset_id, mask_sens_ids, mask_sens_label = organize_data(df)
 
     if not os.path.exists(model_path):
         train(dataset_id)
+        print("training is finished")
+    else:
+        print(f"to load lm model from {model_path}")
 
     deltaT_sens = pred(mask_sens_ids, mask_sens_label)
 

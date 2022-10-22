@@ -18,10 +18,10 @@ class Config:
 
     OLD_DATA_DIC = {"AMI": {"train": r"data/AMI EVALITA 2018/en_training_anon.tsv",
                         "test": r"data/AMI EVALITA 2018/en_testing_labeled_anon.tsv",
-                        "unbiased": r"data/unitended bias in AMI/synthetic_test_set.tsv"}
+                        "unbiased": r"data/AMI EVALITA 2018/unitended bias in AMI/synthetic_test_set.tsv"}
                     }
 
-    DATA_DIC = {"AMI": "data/AMI EVALITA 2018/ds_ami.pkl",
+    DATA_DIC = {"AMI": "data/AMI/ori/ds_ami.pkl",
                 "IMDB-L": "data/IMDB-L/ori/ds_imdb_para.pkl",
                 "IMDB-S": "data/IMDB-S/ori/ds_imdb_sent.pkl",
                 "KINDLE":  "data/KINDLE/ori/ds_kindle.pkl"
@@ -30,7 +30,11 @@ class Config:
     # HAS_LABELS_TEST = {"AMI": {"test": True, "unbiased": True}
     #                   }
 
-    NUM_LABELS = {"AMI": 2}
+    NUM_LABELS = {"AMI": 2,
+                  "KINDLE": 2,
+                  "IMDB-L": 2,
+                  "IMDB-S": 2,
+                  }
 
 
     VEC_DIR = r"data/AMI EVALITA 2018/vector"

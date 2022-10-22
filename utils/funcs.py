@@ -7,13 +7,13 @@ import torch
 from datasets import Dataset
 from utils.config import Config
 import pickle
+import copy
 import numpy as np
 import random
 from utils.models import BertFT
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AutoTokenizer
 from sklearn.model_selection import train_test_split
-from train_lm import mask_all
 
 
 def SetupSeed(seed):
@@ -66,6 +66,26 @@ def getModel(model_shortcut,data_name, seed):
 
     return model
 
+
+def mask_all(dataset_id, attention_mask):
+    new_sens_ids = []
+    new_sens_att = []
+    for old_sen_id,mask in zip(dataset_id,attention_mask):
+        sen_ids = []
+        sen_masks = []
+        seq_len = sum(mask)
+        for i in range(1,seq_len-1):
+            new_sen_id = copy.deepcopy(old_sen_id)
+            new_sen_id[i] = 103
+            sen_ids.append(new_sen_id)
+            sen_masks.append(mask)
+
+        new_sens_ids.append(sen_ids)
+        new_sens_att.append(sen_masks)
+
+    return new_sens_ids, new_sens_att
+
+
 def getTrainDevTensor(sentences, labels, model):
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
@@ -83,7 +103,9 @@ def getMaskedInput(model, data_name):
     df = ds.train
     sentences = list(df['text'].values.astype('U'))
     # print(sentences[:5])
+    df.loc[df["label"]==-1,"label"]=0
     labels = torch.tensor(df["label"].tolist())
+
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
     encoded_inputs = tokenizer(sentences, padding='max_length',truncation=True, max_length=model.max_len)
@@ -112,6 +134,8 @@ def getTrainDevLoader(model,data_name):
     df = ds.train
     sentences = list(df['text'].values.astype('U'))
     # print(sentences[:5])
+    df.loc[df["label"]==-1,"label"]=0
+    print(df["label"].value_counts())
     labels = torch.tensor(df["label"].tolist())
 
     Sen_train, Sen_dev, Lbl_train, Lbl_dev = train_test_split(sentences, labels, test_size=0.2)
@@ -130,7 +154,10 @@ def getTestLoader(model, data_name, test_name):
     # data_fp = Config.DATA_DIC[data_name][test_name]
     # df = pd.read_csv(data_fp, sep="\t", header=0)
     ds = load_pkl(Config.DATA_DIC[data_name])
-    df = ds.eval(test_name)
+    if test_name =="test":
+        df = ds.test
+    else:
+        df = ds.unbiased
 
     sentences = list(df['text'].values.astype('U'))
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
@@ -139,6 +166,8 @@ def getTestLoader(model, data_name, test_name):
     attention_masks = torch.tensor(encoded_inputs["attention_mask"])
 
     if "label" in df.columns:
+        df.loc[df["label"] == -1, "label"] = 0
+        print(df["label"].value_counts())
         labels = torch.tensor(df["label"].tolist())
         test_data = TensorDataset(input_ids, attention_masks, labels)
     else:
