@@ -13,6 +13,7 @@ import pickle
 def SaveOnehotVec():
     cleaned_fp = cleaned_fp_dic["train"]
     data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+
     x_train = data_train['cleaned_text'].values.astype('U')
     vectorizer = CountVectorizer(binary=True,min_df=7)
     vectorizer.fit(x_train)
@@ -32,8 +33,8 @@ def SaveOnehotVec():
 
 
 def SaveTfidfVec():
-
     data_train = pd.read_csv(cleaned_fp_dic["train"], sep="\t", header=0)
+
     x_train = data_train['cleaned_text'].values.astype('U')
     vectorizer = TfidfVectorizer(
         max_features=800000,
@@ -50,8 +51,10 @@ def SaveTfidfVec():
         pickle.dump(vectorizer, fw)
 
     for split in ["train","test","fair"]:
+
         cleaned_fp = cleaned_fp_dic[split]
         data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+
         x_train = data_train['cleaned_text'].values.astype('U')
         vec_train = vectorizer.transform(x_train)
         vec_train = torch.tensor(np.asarray(vec_train.todense()))
@@ -61,8 +64,10 @@ def SaveTfidfVec():
 
 
 def SaveBertVec(split):
+
     cleaned_fp = cleaned_fp_dic[split]
     data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+
     x_train = data_train['cleaned_text'].values.astype('U').tolist()
     tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
     bert = BertForSequenceClassification.from_pretrained('bert-base-uncased')
@@ -104,6 +109,8 @@ cleaned_fp_dic = {"train": Config.cleaned_train_fp,
 
 SaveOnehotVec() #3782,min_df=5:1168,6:1001,7:882
 SaveTfidfVec() #3808,min_df=5:1186,6:1018
+
+
 # for split in ["train","test","fair"]:
 #     SaveBertVec(split) #768
 

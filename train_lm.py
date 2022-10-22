@@ -1,13 +1,20 @@
 import transformers
 from transformers import BertConfig, BertForMaskedLM, DataCollatorForLanguageModeling, BertTokenizer
 from transformers import Trainer, TrainingArguments
+
 import torch
 import torch.nn as nn
-from utils.config import Config
+
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
 import copy
+import os
+
+from utils.funcs import load_pkl
+from utils.config import Config
+
+import pickle
 
 
 def mask_all(dataset_id, attention_mask):
@@ -27,6 +34,22 @@ def mask_all(dataset_id, attention_mask):
         new_sens_att.append(sen_masks)
 
     return new_sens_ids, new_sens_att
+
+
+def organize_data(df):
+
+    sentences = list(df['text'].values.astype('U'))
+
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    attention_mask = encoded_inputs['attention_mask'] #label [num_samples, seq_len]
+
+    mask_sens_ids,_ = mask_all(dataset_id,attention_mask)  # [num_samples, seq_len-2, seq_len]
+    mask_sens_label = [[x]*(len(x)-2) for x in dataset_id]  # [num_samples, seq_len-2, seq_len] need - [CLS],[SEP]
+
+    return dataset_id, mask_sens_ids, mask_sens_label
 
 
 def train(dataset_id):
@@ -90,31 +113,26 @@ def pred(new_sens_ids,new_sens_label):
     print(deltaT_sens[:2])
     return deltaT_sens
 
+
 if __name__ == '__main__':
     # import data and process the data into token numbers
     data_name = "AMI"
-
     model_path = f'saved_model/lm/{data_name}'
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    dataset_id, mask_sens_ids, mask_sens_label = organize_data(df)
 
-    data_fp = Config.DATA_DIC[data_name]["train"]
-    df = pd.read_csv(data_fp, sep="\t", header=0)
-    sentences = list(df['cleaned_text'].values.astype('U'))
+    if not os.path.exists(model_path):
+        train(dataset_id)
 
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    deltaT_sens = pred(mask_sens_ids, mask_sens_label)
 
-    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
-    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
-    attention_mask = encoded_inputs['attention_mask'] #label [num_samples, seq_len]
-
-    # train(dataset_id)
-
-    new_sens_ids,_ = mask_all(dataset_id,attention_mask)  # [num_samples, seq_len-2, seq_len]
-    new_sens_label = [[x]*(len(x)-2) for x in dataset_id]  # [num_samples, seq_len-2, seq_len] need - [CLS],[SEP]
-
-
-    deltaT_sens = pred(new_sens_ids,new_sens_label)
     print(deltaT_sens)
-    np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaT_sens)
+
+    ds.deltaT_sens = deltaT_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
 
 # print(predictions.size())  # torch.Size([1, 11, 30522]) will add [cls]/[sep] automatically
 #

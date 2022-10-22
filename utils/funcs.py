@@ -37,6 +37,14 @@ def getDevice():
         device = torch.device("cpu")
     return device
 
+
+def load_pkl(path):
+    pickle_file = open(path,'rb')
+    data = pickle.load(pickle_file)
+    pickle_file.close()
+    return data
+
+
 def getModel(model_shortcut,data_name, seed):
 
     if model_shortcut == "b-ft":
@@ -69,11 +77,13 @@ def getTrainDevTensor(sentences, labels, model):
     return tensor_dataset
 
 def getMaskedInput(model, data_name):
-    data_fp = Config.DATA_DIC[data_name]["train"]
-    df = pd.read_csv(data_fp, sep="\t", header=0)
-    sentences = list(df['cleaned_text'].values.astype('U'))
+    # data_fp = Config.DATA_DIC[data_name]["train"]
+    # df = pd.read_csv(data_fp, sep="\t", header=0)
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
     # print(sentences[:5])
-    labels = torch.tensor(df["misogynous"].tolist())
+    labels = torch.tensor(df["label"].tolist())
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
     encoded_inputs = tokenizer(sentences, padding='max_length',truncation=True, max_length=model.max_len)
@@ -89,17 +99,20 @@ def getMaskedInput(model, data_name):
 
     # tensor_dataset = TensorDataset(new_input_ids, new_attention_masks,new_labels)
 
-    return new_input_ids, new_attention_masks,new_labels
+    return new_input_ids, new_attention_masks, new_labels
 
 
 
 def getTrainDevLoader(model,data_name):
 
-    data_fp = Config.DATA_DIC[data_name]["train"]
-    df = pd.read_csv(data_fp, sep="\t", header=0)
-    sentences = list(df['cleaned_text'].values.astype('U'))
+    # data_fp = Config.DATA_DIC[data_name]["train"]
+    # df = pd.read_csv(data_fp, sep="\t", header=0)
+
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
     # print(sentences[:5])
-    labels = torch.tensor(df["misogynous"].tolist())
+    labels = torch.tensor(df["label"].tolist())
 
     Sen_train, Sen_dev, Lbl_train, Lbl_dev = train_test_split(sentences, labels, test_size=0.2)
     # print(Sen_dev[:5])
@@ -113,20 +126,20 @@ def getTrainDevLoader(model,data_name):
 
 
 def getTestLoader(model, data_name, test_name):
+    # Has_label = Config.HAS_LABELS_TEST[data_name][test_name]
+    # data_fp = Config.DATA_DIC[data_name][test_name]
+    # df = pd.read_csv(data_fp, sep="\t", header=0)
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.eval(test_name)
 
-    Has_label = Config.HAS_LABELS_TEST[data_name][test_name]
-
-    data_fp = Config.DATA_DIC[data_name][test_name]
-    df = pd.read_csv(data_fp, sep="\t", header=0)
-    sentences = list(df['cleaned_text'].values.astype('U'))
-
+    sentences = list(df['text'].values.astype('U'))
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
     input_ids = torch.tensor(encoded_inputs["input_ids"])
     attention_masks = torch.tensor(encoded_inputs["attention_mask"])
 
-    if Has_label:
-        labels = torch.tensor(df["misogynous"].tolist())
+    if "label" in df.columns:
+        labels = torch.tensor(df["label"].tolist())
         test_data = TensorDataset(input_ids, attention_masks, labels)
     else:
         test_data = TensorDataset(input_ids, attention_masks)

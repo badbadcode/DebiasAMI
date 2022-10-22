@@ -1,11 +1,15 @@
-from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput, check_dir
-from utils.earlystopping import EarlyStopping
 from transformers import AdamW, get_linear_schedule_with_warmup
 from tqdm import tqdm
 import numpy as np
 import torch
+import pickle
+import os
 from sklearn.metrics import accuracy_score,f1_score
 
+from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput, check_dir
+from utils.funcs import load_pkl
+from utils.earlystopping import EarlyStopping
+from utils.config import Config
 
 def eval(model,dev_dataloader):
     model.eval()  # prep model for evaluation
@@ -144,14 +148,18 @@ if __name__=="__main__":
 
     model = getModel(model_shortcut, data_name, seed)
     check_dir(model.save_model_path)
+
     train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
     test_dataloader = getTestLoader(model, data_name, "test")
     unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
 
+    if not os.path.exists(model.save_model_path):
+        train(model,train_dataloader)
+        print("training is finished")
+    else:
+        model.load_state_dict(torch.load(model.save_model_path))
+        print(f"model is loaded from {model.save_model_path}")
 
-    # train(model,train_dataloader)
-    print("training is finished")
-    model.load_state_dict(torch.load(model.save_model_path))
     if model.device == torch.device("cuda"):
         model.cuda()
     # _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
@@ -160,5 +168,7 @@ if __name__=="__main__":
     # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
     # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
 
-    deltaY_sens = predictDeltaY(model)
-    np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    ds.deltaY_sens = predictDeltaY(model)
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+    # np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)

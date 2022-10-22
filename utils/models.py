@@ -257,3 +257,38 @@ class BertFT(nn.Module):
         loss = nn.functional.cross_entropy(probs, labels)
         return probs,loss
 
+class BertFTatt(nn.Module):
+    def __init__(self, data_name, seed):
+        super(BertFTatt, self).__init__()
+        self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=Config.NUM_LABELS[data_name])
+        self.ffn = nn.Linear(self.bert.config.hidden_size, 2)
+
+        self.model_name = "bert-base-uncased"
+        self.model_shortcut = "b-ft-att"
+        self.data_name = data_name
+        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.batch_size = 64
+        self.lr = 1e-5
+        self.weight_decay = 0.001
+        self.warm_up = 0.1
+        self.patience = 3
+        self.epochs = 20
+        self.max_len = 80
+        self.seed = seed
+        self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}.pt"
+
+    def forward(self, input_ids, input_mask, labels=None):
+        outputs = self.bert(input_ids,
+                            token_type_ids=None,
+                            attention_mask=input_mask,
+                            output_hidden_states=True,
+                            output_attentions=True)
+        z0 = outputs.hidden_states[-1][:, 0, :]  # the hidden_states of [CLS]
+
+
+        logits = self.ffn(z0)
+        probs = nn.functional.softmax(logits,dim=1)
+        # print(probs.size())  # torch.Size([28, 2])
+        # print(labels.size())  # torch.Size([28])
+        loss = nn.functional.cross_entropy(probs, labels)
+        return probs,loss
