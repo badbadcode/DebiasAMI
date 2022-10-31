@@ -5,4 +5,9 @@
 /runs/
 /saved_model/
 /__pycache__/
-/data/
+/data/IMDB-L/tokenizer/
+/data/IMDB-L/vector/
+/data/IMDB-S/tokenizer/
+/data/IMDB-S/vector/
+/data/KINDLE/tokenizer/
+/data/KINDLE/vector/
