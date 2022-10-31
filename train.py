@@ -113,7 +113,7 @@ def predictDeltaY(model):
     :return:
     '''
 
-    new_input_ids, new_attention_masks, new_labels = getMaskedInput(model, data_name)
+    new_input_ids, new_attention_masks, new_labels, index_vocab, prob_ids_sens = getMaskedInput(model, data_name)
 
 
     deltaY_sens = []
@@ -146,13 +146,14 @@ if __name__=="__main__":
     seed = 42
     SetupSeed(seed)
 
-    model = getModel(model_shortcut, data_name, seed)
+    model = getModel(model_shortcut, data_name, seed, mode="mask")
+
     check_dir(model.save_model_path)
 
     train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
     test_dataloader = getTestLoader(model, data_name, "test")
     # unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
-
+    # train(model, train_dataloader)
     if not os.path.exists(model.save_model_path):
         train(model,train_dataloader)
         print("training is finished")

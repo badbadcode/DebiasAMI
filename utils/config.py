@@ -20,7 +20,11 @@ class Config:
                         "test": r"data/AMI EVALITA 2018/en_testing_labeled_anon.tsv",
                         "unbiased": r"data/AMI EVALITA 2018/unitended bias in AMI/synthetic_test_set.tsv"}
                     }
-
+    DATA_DIR = {"AMI": "data/AMI",
+                "IMDB-L": "data/IMDB-L",
+                "IMDB-S": "data/IMDB-S",
+                "KINDLE":  "data/KINDLE"
+                }
     DATA_DIC = {"AMI": "data/AMI/ori/ds_ami.pkl",
                 "IMDB-L": "data/IMDB-L/ori/ds_imdb_para.pkl",
                 "IMDB-S": "data/IMDB-S/ori/ds_imdb_sent.pkl",
@@ -37,8 +41,8 @@ class Config:
                   }
 
 
-    VEC_DIR = r"data/AMI EVALITA 2018/vector"
-    CKPT_DIR = ""
+    # VEC_DIR = r"data/AMI EVALITA 2018/vector"
+    CKPT_DIR = "saved_models/"
 
 
     res_path = "../res/res.csv" #所有模型所有数据集的结果

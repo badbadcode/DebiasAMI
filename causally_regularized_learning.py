@@ -36,16 +36,16 @@ def eval(model, data_loader):
     m = [0] * 4
     m_items = []
     loss_lst = []  # 算术平均的loss
-
-    for d in data_loader:
-        x = torch.stack(d['x'], dim=1).float().to(device)
-        x_indexes = d['x_indexes'].to(device)
-        labels = d['labels'].to(device)
-        results = model(x=x, x_indexes=x_indexes, labels=labels, mode='eval')
-        loss = results['loss'].cpu().detach().numpy()
-        prediction = results['prediction']
-        m_items += (labels * 2 + prediction * 1).tolist()
-        loss_lst.append(loss)
+    with torch.no_grad():
+        for d in data_loader:
+            x = torch.stack(d['x'], dim=1).float().to(device)
+            x_indexes = d['x_indexes'].to(device)
+            labels = d['labels'].to(device)
+            results = model(x=x, x_indexes=x_indexes, labels=labels, mode='eval')
+            loss = results['loss'].cpu().detach().numpy()
+            prediction = results['prediction']
+            m_items += (labels * 2 + prediction * 1).tolist()
+            loss_lst.append(loss)
     unique, count = np.unique(m_items, return_counts=True)
     data_count = dict(zip(unique, count))
     # print("loss_lst",loss_lst) #[array(54.24918, dtype=float32), array(62.877163, dtype=float32), array(57.798267, dtype=float32), array(57.76215, dtype=float32), array(53.256836, dtype=float32), array(50.448742, dtype=float32), array(59.496258, dtype=float32), array(55.815033, dtype=float32)]
@@ -124,11 +124,11 @@ def test_report(model, test_dataset, test_fair_dataset):
 
 
 def start_train_normal(batch_size=64, lr_model=2e-4, epochs=1000, log_name='crl_normal',
-                       patience=3, datasets=None, seed=42, model_name="nn"):
+                       patience=3, datasets=None, seed=42, model_name="nn", data_name="AMI"):
     SetupSeed(seed)
 
     train_dataset, dev_dataset, test_dataset, test_fair_dataset = datasets
-    save_model_path = getSaveModelPath(vec_type, seed, log_name, lr_model, model_name)
+    save_model_path = getSaveModelPath(vec_type, seed, log_name, lr_model, model_name, data_name)
     writer = SummaryWriter('./logs/' + log_name)
 
     # print("len(train_dataset['x'][0])", len(train_dataset['x'][0]))
@@ -185,6 +185,7 @@ def start_train_normal(batch_size=64, lr_model=2e-4, epochs=1000, log_name='crl_
     results["lr_model"] = [lr_model]
     results["seed"] = [seed]
     results["best_epoch"] = [best_epoch]
+    results["data_name"] = data_name
 
     results_test, results_fair = test_report(model, test_dataset, test_fair_dataset)
 
@@ -212,11 +213,11 @@ def start_train_normal(batch_size=64, lr_model=2e-4, epochs=1000, log_name='crl_
 
 def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, log_name='crl_causal',
                          change_distribution=False, patience=3, datasets=None, seed=42, model_name="nn",
-                         vec_type="onehot"):
+                         vec_type="onehot", data_name="AMI"):
     SetupSeed(seed)
     train_dataset, dev_dataset, test_dataset, test_fair_dataset = datasets
 
-    save_model_path = getSaveModelPath(vec_type, seed, log_name, lr_model, model_name)
+    save_model_path = getSaveModelPath(vec_type, seed, log_name, lr_model, model_name, data_name)
     writer = SummaryWriter('./logs/' + log_name)
 
     ####
@@ -252,7 +253,7 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
     dev_dataloader = DataLoader(dev_dataset, batch_size=batch_size)
 
-    fem_index = getGenderIndex(vec_type, only_female=True)
+    fem_index = getGenderIndex(vec_type, data_name, only_female=False)
     # print("fem_index", fem_index)
 
     optimizer = AdamW(model.parameters(), lr=lr_model)
@@ -266,7 +267,7 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
         pred_orign = torch.tensor(pred_orign).to(device)
         # print("pred_orign",pred_orign.size()) #torch.Size([3200, 2])
         print("\n")
-        print(f"{model_name}-{vec_type}-{log_name} loss1_detail", loss1_detail)
+        print(f"{data_name}-{model_name}-{vec_type}-{log_name} loss1_detail", loss1_detail)
         print("loss1", loss1)
         # results = eval(model, dev_dataloader)
         # early_stopping_val(val_loss=results["loss"], model=model)
@@ -331,6 +332,8 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
     results["lr_model"] = lr_model
     results["seed"] = seed
     results["best_epoch"] = best_epoch
+    results["data_name"] = data_name
+
 
     results_test, results_fair = test_report(model, test_dataset, test_fair_dataset)
 
@@ -381,8 +384,8 @@ def handle_dataset(train_dataset):
     return train_dataset, dev_dataset
 
 
-def getSaveModelPath(vec_type, seed, logname, lr, model_name):
-    ckpt_path = f"{Config.CKPT_DIR}/ckpt_{vec_type}/"
+def getSaveModelPath(vec_type, seed, logname, lr, model_name,data_name):
+    ckpt_path = f"saved_model/vector/{data_name}/ckpt_{vec_type}/"
     if not os.path.exists(ckpt_path):
         os.makedirs(ckpt_path)
     save_model_path = f'{ckpt_path}checkpoint_{model_name}_{logname}_{str(lr)}_{str(seed)}.pt'
@@ -410,7 +413,7 @@ lambdas = {
 # 随机种子
 seed = 42
 # 批大小
-batch_size = 100
+batch_size = 20
 # 批数
 epochs = 500
 # 模型学习率，这里就是神经网络的模型参数
@@ -429,22 +432,23 @@ clip = None
 # model_name = "lr" # "lr"
 
 if __name__ == '__main__':
-    for vec_type in ["onehot", "tfidf", "bert"]:
+    for vec_type in ["onehot", "tfidf"]:#, "bert"]:
         # vec_type =
         print(vec_type)
+        data_name = "IMDB-S"
 
-        train_dataset, test_dataset, test_fair_dataset = get_sentence_vecs(vec_type, path=Config.VEC_DIR)
+        train_dataset, test_dataset, test_unbiased_dataset = get_sentence_vecs(vec_type,data_name)
 
         train_dataset, dev_dataset = handle_dataset(train_dataset)
 
         train_dataset = train_dataset.add_column('x_indexes', list(range(len(train_dataset))))
         dev_dataset = dev_dataset.add_column('x_indexes', list(range(len(dev_dataset))))
         test_dataset = test_dataset.add_column('x_indexes', list(range(len(test_dataset))))
-        test_fair_dataset = test_fair_dataset.add_column('x_indexes', list(range(len(test_fair_dataset))))
+        test_unbiased_dataset = test_unbiased_dataset.add_column('x_indexes', list(range(len(test_unbiased_dataset))))
 
-        datasets = [train_dataset, dev_dataset, test_dataset, test_fair_dataset]
+        datasets = [train_dataset, dev_dataset, test_dataset, test_unbiased_dataset]
 
-        for model_name in ["nn"]:
+        for model_name in ["nn","lr"]:
             print(model_name)
             start_train_reweight(epochs=epochs,
                                  lr_model=lr,
@@ -455,7 +459,8 @@ if __name__ == '__main__':
                                  datasets=datasets,
                                  seed=seed,
                                  model_name=model_name,
-                                 vec_type=vec_type)
+                                 vec_type=vec_type,
+                                 data_name = data_name)
             print(f"{vec_type} {model_name} Causal Learning is finished!")
 
             start_train_normal(epochs=epochs,
@@ -463,5 +468,6 @@ if __name__ == '__main__':
                                patience=patience,
                                datasets=datasets,
                                seed=seed,
-                               model_name=model_name)
+                               model_name=model_name,
+                                data_name = data_name)
             print(f"{vec_type} {model_name} Normal Learning is finished!")

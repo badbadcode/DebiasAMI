@@ -45,10 +45,10 @@ def load_pkl(path):
     return data
 
 
-def getModel(model_shortcut,data_name, seed):
+def getModel(model_shortcut,data_name, seed, mode):
 
     if model_shortcut == "b-ft":
-        model = BertFT(data_name=data_name, seed=seed)
+        model = BertFT(data_name=data_name, seed=seed, mode=mode)
     if model.device == torch.device("cuda"):
         model.cuda()
     # if model_shortcut == "bilstm":
@@ -86,6 +86,71 @@ def mask_all(dataset_id, attention_mask):
     return new_sens_ids, new_sens_att
 
 
+def mask_syn(input_ids,attention_masks,tokenizer):
+
+    '''
+    :param input_ids:
+    :param attention_masks:
+    :param tokenizer:
+    :return: mask_ids_sens [num_samples, num_token_in_vocab, seq_len]
+             mask_atts_sens [num_samples, num_token_in_vocab, seq_len]
+             index_vocab_sens: [num_samples, num_token_in_vocab]
+             prob_ids_sens:[num_samples, num_token_in_vocab, num_syns_token]
+    '''
+
+    # data_name = "IMDB-S"
+    # ds = load_pkl(Config.DATA_DIC[data_name])
+    # vocab_df = ds.antonym_vocab
+    # df = ds.train
+    # sentences = list(df['text'].values.astype('U'))
+    # # print(sentences[:5])
+    # df.loc[df["label"] == -1, "label"] = 0
+    # labels = torch.tensor(df["label"].tolist())
+    #
+    # tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased", do_lower_case=True)
+    # # print("sentences", len(sentences),sentences[:5])
+    # encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
+    # # token_vocab_lst = []
+    # input_ids = encoded_inputs["input_ids"]
+    # attention_masks = encoded_inputs["attention_mask"]
+    mask_ids_sens = []
+    mask_atts_sens = []
+    index_vocab_sens = []
+    prob_ids_sens = []
+    for ids, masks in zip(input_ids, attention_masks):
+        tokens = tokenizer.convert_ids_to_tokens(ids)
+
+        index_vocab = []
+        new_ids_sen = []
+        new_masks_sen = []
+        prob_ids_sen = []
+
+        for i, token in enumerate(tokens):
+            if token in vocab_df.term.values.tolist():  # if this bert token in vocab
+                index_vocab.append(i)
+                syn_lst = vocab_df[vocab_df["term"] == tok]["synonyms"].values.tolist()[0]
+                mask_lst = [tok] + syn_lst  #these tokens in this sentence (if it exsists) need to be masked
+
+                index_prob_ids = []  # when i calculate the gold probs in this postion(i), I need sum the probs in those ids up.
+                for x in mask_lst:
+                    if tokenizer.convert_tokens_to_ids(x) == 100:  # [UNK]
+                        continue
+                    else:
+                        index_prob_ids.append(tokenizer.convert_tokens_to_ids(x))
+
+                new_ids = [103 if id in index_prob_ids else id for id in ids]   # seq_len
+                # new_masks = [0 if id in index_prob_ids else masks[i] for id in ids]
+                new_ids_sen.append(new_ids)
+                new_masks_sen.append(masks)
+                prob_ids_sen.append(index_prob_ids)
+
+        mask_ids_sens.append(new_ids_sen)
+        mask_atts_sens.append(new_masks_sen)
+        index_vocab_sens.append(index_vocab)
+        prob_ids_sens.append(prob_ids_sen)
+    return mask_ids_sens, mask_atts_sens, index_vocab_sens,prob_ids_sens
+
+
 def getTrainDevTensor(sentences, labels, model):
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
@@ -96,15 +161,19 @@ def getTrainDevTensor(sentences, labels, model):
     tensor_dataset = TensorDataset(input_ids, attention_masks, labels)
     return tensor_dataset
 
-def getMaskedInput(model, data_name):
+
+
+
+def getMaskedTensor(sentences, labels, model):
     # data_fp = Config.DATA_DIC[data_name]["train"]
     # df = pd.read_csv(data_fp, sep="\t", header=0)
-    ds = load_pkl(Config.DATA_DIC[data_name])
-    df = ds.train
-    sentences = list(df['text'].values.astype('U'))
-    # print(sentences[:5])
-    df.loc[df["label"]==-1,"label"]=0
-    labels = torch.tensor(df["label"].tolist())
+    # ds = load_pkl(Config.DATA_DIC[data_name])
+    # df = ds.train
+    #
+    # sentences = list(df['text'].values.astype('U'))
+    # # print(sentences[:5])
+    # df.loc[df["label"]==-1,"label"]=0
+    # labels = torch.tensor(df["label"].tolist())
 
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
@@ -112,16 +181,17 @@ def getMaskedInput(model, data_name):
     input_ids = encoded_inputs["input_ids"]
     attention_masks = encoded_inputs["attention_mask"]
 
-    new_input_ids,new_attention_masks = mask_all(input_ids,attention_masks) #[num_samples, seq_len-2, seq_len]
-    new_labels = [[label]*(sum(mask)-2) for mask,label in zip(attention_masks,labels)]
+    new_input_ids,new_attention_masks,_,_ = mask_syn(input_ids,attention_masks, tokenizer) #[num_samples, seq_len-2, seq_len]
 
-    # flat_input_ids = sum(new_input_ids,[])
-    # flat_attention_masks = sum(new_attention_masks, [])
-    # flat_labels = sum(new_labels, [])
+    new_labels = [[label]*len(new_mask_lst) for new_mask_lst,label in zip(new_attention_masks,labels)]
 
-    # tensor_dataset = TensorDataset(new_input_ids, new_attention_masks,new_labels)
+    new_input_ids = torch.tensor(sum(new_input_ids,[]))
+    new_attention_masks = torch.tensor(sum(new_attention_masks, []))
+    new_labels = torch.tensor(sum(new_labels, []))
 
-    return new_input_ids, new_attention_masks, new_labels
+    tensor_dataset = TensorDataset(new_input_ids, new_attention_masks,new_labels)
+
+    return tensor_dataset
 
 
 
@@ -140,8 +210,12 @@ def getTrainDevLoader(model,data_name):
 
     Sen_train, Sen_dev, Lbl_train, Lbl_dev = train_test_split(sentences, labels, test_size=0.2)
     # print(Sen_dev[:5])
-    train_data = getTrainDevTensor(Sen_train, Lbl_train, model)
-    dev_data = getTrainDevTensor(Sen_dev, Lbl_dev, model)
+    if model.mode=="normal":
+        train_data = getTrainDevTensor(Sen_train, Lbl_train, model)
+        dev_data = getTrainDevTensor(Sen_dev, Lbl_dev, model)
+    elif model.mode=="mask":
+        train_data = getMaskedTensor(Sen_train, Lbl_train, model)
+        dev_data = getMaskedTensor(Sen_dev, Lbl_dev, model)
 
     train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=model.batch_size)
     dev_dataloader = DataLoader(dev_data, sampler=SequentialSampler(dev_data), batch_size=model.batch_size)
@@ -240,7 +314,7 @@ def cal_partial_Jbs_partial_W(X, w, I, device, fem_index):
     W = w * w
     the_one = torch.ones(X.shape[1], 1).to(device)  # (p,1)
     for j in range(X.shape[1]): # X的特征维度，依次将每个变量作为处置变量 循环内部的是论文里的公式
-        if fem_index[j] == 1 :
+        if fem_index[j] == 1:
             X_minus_j = X.clone().detach().to(device)
             X_minus_j[:, j] = 0
             Ij = I[:, j].view(1, -1)  # 当第j个变量作为处置变量时，所有样本的处置情况（1/0） #（1，n) 这和我推导时不一样
@@ -419,27 +493,41 @@ def update_w_one_step(X, Y, w, I, pred, lambda1, lambda2, lambda5, lr, fem_index
     loss, loss_detail = cal_Jw(X, Y, new_w, I, pred,fem_index, lambda1=lambda1, lambda2=lambda2, lambda5=lambda5, device=device)
     return new_w, loss, loss_detail
 
-
-def get_sentence_vecs(vec_type, path=None):
+def get_sentence_vecs(vec_type, data_name):
     '''
     获得 aclImdb数据级经过Bert编码后的句向量
 
     :param vec_type: 向量类型 包括['last_hidden_state_first', 'pooler_output']
     :return: train_dataset, test_dataset
     '''
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    # path = "data/AMI EVALITA 2018/vector" if path is None else path
 
-    path = "data/AMI EVALITA 2018/vector" if path is None else path
-    train_X = torch.load(os.path.join(path, vec_type, 'train.pt'))
-    data_train = pd.read_csv(Config.cleaned_train_fp, sep="\t", header=0)
-    train_Y = torch.LongTensor(data_train['misogynous'].values.astype('int').tolist())
+    train_X = torch.load(f"{Config.DATA_DIR[data_name]}/vector/{vec_type}/train.pt")
+    # train_X = torch.load(os.path.join(path, vec_type, 'train.pt'))
+    data_train = ds.train
+    train_label = data_train['label'].values.astype('int').tolist()
+    train_label = [0 if l==-1 else l for l in train_label]
+    train_Y = torch.LongTensor(train_label)
 
-    test_X = torch.load(os.path.join(path, vec_type, f'test.pt'))
-    data_test = pd.read_csv(Config.cleaned_test_fp, sep="\t", header=0)
-    test_Y = torch.LongTensor(data_test['misogynous'].values.astype('int').tolist())
+    test_X = torch.load(f"{Config.DATA_DIR[data_name]}/vector/{vec_type}/test.pt")
+    data_test = ds.test
+    test_label = data_test['label'].values.astype('int').tolist()
+    test_label = [0 if l == -1 else l for l in test_label]
+    test_Y = torch.LongTensor(test_label)
 
-    test_fair_X = torch.load(os.path.join(path, vec_type, f'fair.pt'))
-    data_test_fair = pd.read_csv(Config.cleaned_test_fair_fp, sep="\t", header=0)
-    test_fair_Y = torch.LongTensor(data_test_fair['misogynous'].values.astype('int').tolist())
+    test_fair_X = torch.load(f"{Config.DATA_DIR[data_name]}/vector/{vec_type}/unbiased.pt")
+    if data_name == "AMI":
+        unbiased_label = list(ds.unbiased['label'].values.astype('int'))
+    elif data_name == "IMDB-S":
+        unbiased_label = list(ds.test_ct['label'].values.astype('int'))
+    else:
+        unbiased_label = list(ds.test['ct_label'].values.astype('int'))
+
+    # data_test_fair = pd.read_csv(Config.cleaned_test_fair_fp, sep="\t", header=0)
+    unbiased_label = [0 if l == -1 else l for l in unbiased_label]
+    test_fair_Y = torch.LongTensor(unbiased_label)
+
 
     train_dataset = Dataset.from_dict({
         'x': train_X,
@@ -457,8 +545,78 @@ def get_sentence_vecs(vec_type, path=None):
     })
 
     return train_dataset, test_dataset, test_fair_dataset
+# def get_sentence_vecs(vec_type, path=None):
+#     '''
+#     获得 aclImdb数据级经过Bert编码后的句向量
+#
+#     :param vec_type: 向量类型 包括['last_hidden_state_first', 'pooler_output']
+#     :return: train_dataset, test_dataset
+#     '''
+#
+#     path = "data/AMI EVALITA 2018/vector" if path is None else path
+#     train_X = torch.load(os.path.join(path, vec_type, 'train.pt'))
+#     data_train = pd.read_csv(Config.cleaned_train_fp, sep="\t", header=0)
+#     train_Y = torch.LongTensor(data_train['misogynous'].values.astype('int').tolist())
+#
+#     test_X = torch.load(os.path.join(path, vec_type, f'test.pt'))
+#     data_test = pd.read_csv(Config.cleaned_test_fp, sep="\t", header=0)
+#     test_Y = torch.LongTensor(data_test['misogynous'].values.astype('int').tolist())
+#
+#     test_fair_X = torch.load(os.path.join(path, vec_type, f'fair.pt'))
+#     data_test_fair = pd.read_csv(Config.cleaned_test_fair_fp, sep="\t", header=0)
+#     test_fair_Y = torch.LongTensor(data_test_fair['misogynous'].values.astype('int').tolist())
+#
+#     train_dataset = Dataset.from_dict({
+#         'x': train_X,
+#         'labels': train_Y
+#     })
+#
+#     test_dataset = Dataset.from_dict({
+#         'x': test_X,
+#         'labels': test_Y
+#     })
+#
+#     test_fair_dataset = Dataset.from_dict({
+#         'x': test_fair_X,
+#         'labels': test_fair_Y
+#     })
+#
+#     return train_dataset, test_dataset, test_fair_dataset
 
-def getGenderIndex(vec_type, only_female=True):
+# def getGenderIndex(vec_type, only_female=True):
+#     '''
+#     :param vec_type: 编码的类型
+#     :param only_female: 是否将所有单词都看做是处置变量
+#     :return:
+#     '''
+#     if only_female:
+#         baseline_swap_list = [["woman", "man"],["girls","boys"], ["girl", "boy"], ["she", "he"], ["mother", "father"], ["daughter", "son"], ["gal", "guy"], ["female", "male"], ["her", "his"], ["herself", "himself"]]
+#         female_words = [x[0] for x in baseline_swap_list]
+#         if vec_type in ["onehot", "tfidf"]:
+#             vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+#             vectorizer = pickle.load(open(vectorizer_path, "rb"))
+#             vocab_dic = vectorizer.vocabulary_
+#             gender_index = np.zeros(len(vocab_dic.keys()))
+#             for x in female_words:
+#                 try:
+#                     gender_index[vocab_dic[x]]=1
+#                     # print(x)# no "gal","herself"
+#                 except:
+#                     pass
+#         else:
+#             gender_index = np.ones(768)
+#     else: #把所有单词当做处置变量
+#         if vec_type in ["onehot", "tfidf"]:
+#             vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+#             vectorizer = pickle.load(open(vectorizer_path, "rb"))
+#             vocab_dic = vectorizer.vocabulary_
+#             gender_index = np.ones(len(vocab_dic.keys()))
+#         else:
+#             gender_index = np.ones(768)
+#
+#     return gender_index
+
+def getGenderIndex(vec_type, data_name, only_female=True):
     '''
     :param vec_type: 编码的类型
     :param only_female: 是否将所有单词都看做是处置变量
@@ -468,7 +626,8 @@ def getGenderIndex(vec_type, only_female=True):
         baseline_swap_list = [["woman", "man"],["girls","boys"], ["girl", "boy"], ["she", "he"], ["mother", "father"], ["daughter", "son"], ["gal", "guy"], ["female", "male"], ["her", "his"], ["herself", "himself"]]
         female_words = [x[0] for x in baseline_swap_list]
         if vec_type in ["onehot", "tfidf"]:
-            vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+            vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
+            # vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
             vectorizer = pickle.load(open(vectorizer_path, "rb"))
             vocab_dic = vectorizer.vocabulary_
             gender_index = np.zeros(len(vocab_dic.keys()))
@@ -482,7 +641,7 @@ def getGenderIndex(vec_type, only_female=True):
             gender_index = np.ones(768)
     else: #把所有单词当做处置变量
         if vec_type in ["onehot", "tfidf"]:
-            vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+            vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
             vectorizer = pickle.load(open(vectorizer_path, "rb"))
             vocab_dic = vectorizer.vocabulary_
             gender_index = np.ones(len(vocab_dic.keys()))
@@ -491,33 +650,32 @@ def getGenderIndex(vec_type, only_female=True):
 
     return gender_index
 
-
-if __name__ == '__main__':
-    seed = 824
-    torch.manual_seed(seed)  # 为CPU设置随机种子
-    torch.cuda.manual_seed(seed)  # 为当前GPU设置随机种子
-    torch.cuda.manual_seed_all(seed)  # 为所有GPU设置随机种子
-
-    X = torch.randn(100000, 5)
-    Y = torch.zeros(X.shape[0])
-    Y[torch.rand_like(Y) > 0.5] = 1
-    pred = torch.rand(X.shape[0])
-    I = torch.zeros_like(X)
-    I[torch.rand(*X.shape) > 0.5] = 1
-    w = torch.rand(X.shape[0])
-
-    losses = []
-    lr = 1e-3
-    lr_decay = 0.5
-    lambda1 = 1e-2
-    lambda2 = 1e-3
-    lambda5 = 1e-8
-    for i in range(10):
-        w, loss, loss_detail = update_w_one_step(X, Y, w, I, pred, lambda1, lambda2, lambda5, lr, device='cpu')
-        losses.append(loss)
-        lr = lr * lr_decay
-
-    print(losses[:3], losses[-3:])
-    print((w * w)[:10])
-    print((w * w).sum())
+# if __name__ == '__main__':
+#     seed = 824
+#     torch.manual_seed(seed)  # 为CPU设置随机种子
+#     torch.cuda.manual_seed(seed)  # 为当前GPU设置随机种子
+#     torch.cuda.manual_seed_all(seed)  # 为所有GPU设置随机种子
+#
+#     X = torch.randn(100000, 5)
+#     Y = torch.zeros(X.shape[0])
+#     Y[torch.rand_like(Y) > 0.5] = 1
+#     pred = torch.rand(X.shape[0])
+#     I = torch.zeros_like(X)
+#     I[torch.rand(*X.shape) > 0.5] = 1
+#     w = torch.rand(X.shape[0])
+#
+#     losses = []
+#     lr = 1e-3
+#     lr_decay = 0.5
+#     lambda1 = 1e-2
+#     lambda2 = 1e-3
+#     lambda5 = 1e-8
+#     for i in range(10):
+#         w, loss, loss_detail = update_w_one_step(X, Y, w, I, pred, lambda1, lambda2, lambda5, lr, device='cpu')
+#         losses.append(loss)
+#         lr = lr * lr_decay
+#
+#     print(losses[:3], losses[-3:])
+#     print((w * w)[:10])
+#     print((w * w).sum())
 

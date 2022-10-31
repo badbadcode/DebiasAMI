@@ -225,12 +225,13 @@ class Vector_LogisticNet_Classifier(torch.nn.Module):
         return sorted_coef_dic
 
 class BertFT(nn.Module):
-    def __init__(self, data_name, seed):
+    def __init__(self, data_name, seed, mode):
         super(BertFT, self).__init__()
         self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=Config.NUM_LABELS[data_name])
         self.ffn = nn.Linear(self.bert.config.hidden_size, 2)
 
         self.model_name = "bert-base-uncased"
+        self.mode = mode
         self.model_shortcut = "b-ft"
         self.data_name = data_name
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -242,12 +243,14 @@ class BertFT(nn.Module):
         self.epochs = 20
         self.max_len = 80
         self.seed = seed
-        self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}.pt"
+        self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}_{mode}.pt"
 
     def forward(self, input_ids, input_mask, labels=None):
         outputs = self.bert(input_ids,
                              token_type_ids=None,
                              attention_mask= input_mask, output_hidden_states=True)
+        # print("\n ==output=====")
+        # print(len(outputs.hidden_states)) #13 the first one is embedding
         z0 = outputs.hidden_states[-1][:, 0, :]  # the hidden_states of [CLS]
 
         logits = self.ffn(z0)
@@ -283,6 +286,8 @@ class BertFTatt(nn.Module):
                             attention_mask=input_mask,
                             output_hidden_states=True,
                             output_attentions=True)
+        print("output=====")
+        print(outputs.size())
         z0 = outputs.hidden_states[-1][:, 0, :]  # the hidden_states of [CLS]
 
 

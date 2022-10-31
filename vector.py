@@ -9,33 +9,60 @@ from my_utils import *
 from tqdm import tqdm
 import pickle
 
+def load_pkl(path):
+    pickle_file = open(path,'rb')
+    data = pickle.load(pickle_file)
+    pickle_file.close()
+    return data
 
-def SaveOnehotVec():
-    cleaned_fp = cleaned_fp_dic["train"]
-    data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
 
-    x_train = data_train['cleaned_text'].values.astype('U')
+def SaveOnehotVec(data_name):
+    # cleaned_fp = cleaned_fp_dic["train"]
+    # data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+    # x_train = data_train['cleaned_text'].values.astype('U')
+
+    # data_name = "IMDB-S"
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    x_train = list(ds.train['text'].values.astype('U'))
+
     vectorizer = CountVectorizer(binary=True,min_df=7)
     vectorizer.fit(x_train)
-    vectorizer_path = f"{Config.data_dir}/tokenizer/onehot_vectorizer.pkl"
+    vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/onehot_vectorizer.pkl"
+    check_dir(vectorizer_path)
     with open(vectorizer_path, 'wb') as fw:
         pickle.dump(vectorizer, fw)
 
-    for split in ["train","test","fair"]:
-        cleaned_fp = cleaned_fp_dic[split]
-        data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
-        x_train = data_train['cleaned_text'].values.astype('U')
-        vec_train = vectorizer.transform(x_train)
-        vec_train = torch.tensor(np.asarray(vec_train.todense()))
-        vec_fp = f"{Config.VEC_DIR}/onehot/{split}.pt"
+    for split in ["train", "test", "unbiased"]:
+
+        # cleaned_fp = cleaned_fp_dic[split]
+        # data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+        # x_train = data_train['cleaned_text'].values.astype('U')
+        if split=="train":
+            sentences = list(ds.train['text'].values.astype('U'))
+        elif split=="test":
+            sentences = list(ds.test['text'].values.astype('U'))
+        elif split=="unbiased":
+            if data_name == "AMI":
+                sentences = list(ds.unbiased['text'].values.astype('U'))
+            elif data_name == "IMDB-S":
+                sentences = list(ds.test_ct['text'].values.astype('U'))
+            else:
+                sentences = list(ds.test['ct_text_amt'].values.astype('U'))
+
+        vec_sens = vectorizer.transform(sentences)
+        vec_sens = torch.tensor(np.asarray(vec_sens.todense()))
+        vec_fp = f"{Config.DATA_DIR[data_name]}/vector/onehot/{split}.pt"
         check_dir(vec_fp)
-        torch.save(vec_train,vec_fp)
+        torch.save(vec_sens,vec_fp)
 
 
-def SaveTfidfVec():
-    data_train = pd.read_csv(cleaned_fp_dic["train"], sep="\t", header=0)
+def SaveTfidfVec(data_name):
+    # data_train = pd.read_csv(cleaned_fp_dic["train"], sep="\t", header=0)
+    # x_train = data_train['cleaned_text'].values.astype('U')
+    # data_name = "IMDB-S"
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    x_train = list(ds.train['text'].values.astype('U'))
 
-    x_train = data_train['cleaned_text'].values.astype('U')
     vectorizer = TfidfVectorizer(
         max_features=800000,
         token_pattern=r"(?u)\b\w+\b",
@@ -45,22 +72,32 @@ def SaveTfidfVec():
         # ngram_range=(1, 5)
     )
     vectorizer.fit(x_train)
-    vectorizer_path = f"{Config.data_dir}/tokenizer/tfidf_vectorizer.pkl"
-
+    vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/tfidf_vectorizer.pkl"
+    check_dir(vectorizer_path)
     with open(vectorizer_path, 'wb') as fw:
         pickle.dump(vectorizer, fw)
 
-    for split in ["train","test","fair"]:
+    for split in ["train","test","unbiased"]:
+        # cleaned_fp = cleaned_fp_dic[split]
+        # data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
+        # x_train = data_train['cleaned_text'].values.astype('U')
+        if split=="train":
+            sentences = list(ds.train['text'].values.astype('U'))
+        elif split=="test":
+            sentences = list(ds.test['text'].values.astype('U'))
+        elif split=="unbiased":
+            if data_name == "AMI":
+                sentences = list(ds.unbiased['text'].values.astype('U'))
+            elif data_name =="IMDB-S":
+                sentences = list(ds.test_ct['text'].values.astype('U'))
+            else:
+                sentences = list(ds.test['ct_text_amt'].values.astype('U'))
 
-        cleaned_fp = cleaned_fp_dic[split]
-        data_train = pd.read_csv(cleaned_fp, sep="\t", header=0)
-
-        x_train = data_train['cleaned_text'].values.astype('U')
-        vec_train = vectorizer.transform(x_train)
-        vec_train = torch.tensor(np.asarray(vec_train.todense()))
-        vec_fp = f"{Config.VEC_DIR}/tfidf/{split}.pt"
+        vec_sens = vectorizer.transform(sentences)
+        vec_sens = torch.tensor(np.asarray(vec_sens.todense()))
+        vec_fp = f"{Config.DATA_DIR[data_name]}/vector/tfidf/{split}.pt"
         check_dir(vec_fp)
-        torch.save(vec_train,vec_fp)
+        torch.save(vec_sens,vec_fp)
 
 
 def SaveBertVec(split):
@@ -101,14 +138,14 @@ def SaveBertVec(split):
 
 
 
-cleaned_fp_dic = {"train": Config.cleaned_train_fp,
-            "test": Config.cleaned_test_fp,
-           "fair": Config.cleaned_test_fair_fp}
+# cleaned_fp_dic = {"train": Config.cleaned_train_fp,
+#             "test": Config.cleaned_test_fp,
+#            "fair": Config.cleaned_test_fair_fp}
 
 
-
-SaveOnehotVec() #3782,min_df=5:1168,6:1001,7:882
-SaveTfidfVec() #3808,min_df=5:1186,6:1018
+data_name = "IMDB-L"
+SaveOnehotVec(data_name) #3782,min_df=5:1168,6:1001,7:882
+SaveTfidfVec(data_name) #3808,min_df=5:1186,6:1018
 
 
 # for split in ["train","test","fair"]:

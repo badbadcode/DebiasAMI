@@ -5,4 +5,4 @@
 #BSUB -J ami
 #BSUB -o %J.out
 #BSUB -e %J.err
-python -u train_lm.py >> out
+python -u train.py >> out_classification

@@ -6,11 +6,8 @@ import random
 from utils.config import Config
 import pickle
 import re
-
 import io, time
 from itertools import combinations, cycle, product
-
-
 import sklearn
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.metrics import roc_auc_score
@@ -18,7 +15,12 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold, cross_val_score, train_test_split
 from sklearn.metrics import classification_report, accuracy_score
-
+from pydictionary import Dictionary
+from gensim import utils
+from gensim.models import Word2Vec
+from gensim.scripts.glove2word2vec import glove2word2vec
+from gensim.models import KeyedVectors
+from tqdm import tqdm
 
 
 def load_pkl(path):
@@ -44,6 +46,46 @@ def save_cate(data_name):
         att_label.append(labels)
     ds.cate = att_label
     pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
+def get_data_glove_syn():
+    glove_input_file = 'resource/glove/glove.840B.300d.txt'
+    texts = open(glove_input_file, encoding="utf-8").readlines()
+    for data_name in ["IMDB-S","IMDB-L","KINDLE"]:
+        ds = load_pkl(Config.DATA_DIC[data_name])
+        vocab_lst = ds.antonym_vocab.term.values.tolist()
+        glove_data_file = f'resource/glove/glove.{data_name}.300d.txt'
+        f = open(glove_data_file, "w", encoding='utf-8')
+        print(f"selecting the vec from {data_name}")
+        for x in tqdm(texts):
+            w = x.strip().split()[0]
+            if w in vocab_lst:
+                f.write(x)
+        f.close()
+    for data_name in ["IMDB-S", "IMDB-L", "KINDLE"]:
+        ds = load_pkl(Config.DATA_DIC[data_name])
+        glove_data_file = f'resource/glove/glove.{data_name}.300d.txt'
+        glove_model = KeyedVectors.load_word2vec_format(glove_data_file, binary=False, no_header=True)
+        synonyms_list = []
+        for ri, row in ds.antonym_vocab.iterrows():
+            word = row["term"]
+            try:
+                synonyms_tuple = glove_model.most_similar(word, topn=5)
+                synonyms = [w for w, sim in synonyms_tuple if sim >= 0.75]
+            except:
+                synonyms = []
+            synonyms_list.append(synonyms)
+        ds.antonym_vocab["synonyms"] = synonyms_list
+        pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+# def word2vec(data_name):
+#     data_name = "IMDB-S"
+#     ds = load_pkl(Config.DATA_DIC[data_name])
+#     train_text = ds.train.text.values.tolist()
+#     train_text_split = [utils.simple_preprocess(text) for text in train_text]
+#     train_model = Word2Vec(train_text_split, window=5, min_count=5, workers=4)
+#     print(train_model.wv.most_similar(['good'],topn=3))
+#     # [('bad', 0.9959428906440735), ('funny', 0.9944429397583008), ('actually', 0.9895380139350891)]
 
 
 def get_cate_wd(data_name):
@@ -245,9 +287,9 @@ if __name__=='__main__':
     # delta_T = np.load("data/AMI EVALITA 2018/deltaT_sens.npy", allow_pickle=True)
     # delta_Y = np.load("data/AMI EVALITA 2018/deltaY_sens.npy", allow_pickle=True)
     # save_cate(data_name)
-    get_cate_wd(data_name)
+    # get_cate_wd(data_name)
     # generate_ct_sentences(data_name)
-
+    get_data_glove_syn()
     ds = load_pkl(Config.DATA_DIC[data_name])
     i= 2
     for text,cate,wd,human in zip(ds.train["text"].values.tolist()[i:],
