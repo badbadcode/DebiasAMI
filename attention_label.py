@@ -21,7 +21,9 @@ from gensim.models import Word2Vec
 from gensim.scripts.glove2word2vec import glove2word2vec
 from gensim.models import KeyedVectors
 from tqdm import tqdm
-
+from tqdm.contrib import tzip
+from sklearn import preprocessing
+from nltk.corpus import stopwords
 
 def load_pkl(path):
     pickle_file = open(path,'rb')
@@ -29,23 +31,69 @@ def load_pkl(path):
     pickle_file.close()
     return data
 
+def get_snt(token):
+    from nltk.corpus import wordnet as wn
+    walks = wn.synsets(token)
+    ant = [walk_lemma.antonyms() for walk_lemmas in [walk.lemmas() for walk in walks] for walk_lemma in walk_lemmas if
+     walk_lemma.antonyms() != []]
 
-def save_cate(data_name):
+    return ant
+def save_index_vocab(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    vocab_df = ds.antonym_vocab
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    attention_masks = encoded_inputs['attention_mask']
+
+    index_vocab_sens = []
+    for ids, masks in tzip(dataset_id[:], attention_masks[:]):
+        tokens = tokenizer.convert_ids_to_tokens(ids)
+        # print(tokens)
+        index_vocab = []
+        for j, token in enumerate(tokens):
+            if token in vocab_df.term.values.tolist():  # if this bert token in vocab
+                index_vocab.append(j)
+        # print(index_vocab)
+        index_vocab_sens.append(index_vocab)
+    ds.train["index_vocab_sens"] = index_vocab_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
+def save_cate(data_name,scale):
     ds = load_pkl(Config.DATA_DIC[data_name])
     delta_T = ds.deltaT_sens
     delta_Y = ds.deltaY_sens
-    att_weight = delta_T
+    min_max_scaler = preprocessing.MinMaxScaler(feature_range=(0.5, 1))
     att_label = []
-    for ts,ys in zip(att_weight,delta_Y):
-        labels = []
-        for t,y in zip(ts,ys):
-            try:
-                labels.append(y/t)
-            except:
-                print(y,t)
-        att_label.append(labels)
-    ds.cate = att_label
-    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+    for i,(ts,ys) in enumerate(tzip(delta_T[:],delta_Y[:])):
+        if len(ts)==0:
+            att_label.append([])
+        else:
+            if scale:
+                ts = [[x] for x in ts]
+                ys = [[x] for x in ys]
+
+                ts = min_max_scaler.fit_transform(np.asarray(ts))
+                ys = min_max_scaler.fit_transform(np.asarray(ys))
+
+                # print(np.squeeze(ts))
+                ts = np.squeeze(ts,axis=-1)
+                ys = np.squeeze(ys,axis=-1)
+
+            labels = []
+            for t,y in zip(ts,ys):
+                try:
+                    labels.append(y/t)
+                    # print(y,t,y/t)
+                except:
+                    print(y,t)
+            att_label.append(labels)
+
+    ds.train["cate"] = att_label
+    # pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
 
 def get_data_glove_syn():
@@ -78,42 +126,204 @@ def get_data_glove_syn():
         ds.antonym_vocab["synonyms"] = synonyms_list
         pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
-# def word2vec(data_name):
-#     data_name = "IMDB-S"
-#     ds = load_pkl(Config.DATA_DIC[data_name])
-#     train_text = ds.train.text.values.tolist()
-#     train_text_split = [utils.simple_preprocess(text) for text in train_text]
-#     train_model = Word2Vec(train_text_split, window=5, min_count=5, workers=4)
-#     print(train_model.wv.most_similar(['good'],topn=3))
-#     # [('bad', 0.9959428906440735), ('funny', 0.9944429397583008), ('actually', 0.9895380139350891)]
+def get_lexicon_wd(data_name):
 
-
-def get_cate_wd(data_name):
+    pos_words = open("resource/hate lexicon/positive-words.txt", encoding="ISO-8859-1").readlines()
+    neg_words = open("resource/hate lexicon/negative-words.txt", encoding="ISO-8859-1").readlines()
+    lexicon_lst = pos_words + neg_words
+    lexicon_lst = [x.strip() for x in lexicon_lst]
+    print(lexicon_lst)
     ds = load_pkl(Config.DATA_DIC[data_name])
-    vocab_lst = ds.antonym_vocab.term.values.tolist()
+
     df = ds.train
     sentences = list(df['text'].values.astype('U'))
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
     dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
-    df["dataset_id"] = dataset_id
-    cate = ds.cate
+    ds.train["dataset_ids"] = dataset_id
+
+    stop_lst = stopwords.words('english')
+
     catewd_sens = []
-    for ids,sen_cate in zip(dataset_id, cate):
-        tokens = tokenizer.convert_ids_to_tokens(ids[1:-1])
-        # top_cate = [w_cate for token,w_cate in zip(tokens,sen_cate) if token in vocab_lst]
-        # median_cate = np.median(top_cate)
-        catewd_sen = []
 
-        for token,wd_cate in zip(tokens,sen_cate):
+    for ids, cate, index_vocab in tzip(dataset_id[:],
+                                      ds.train["cate"].values.tolist()[:],
+                                      ds.train["index_vocab_sens"].values.tolist()[:]):
+        if len(index_vocab)==0:
+            catewd_sens.append([])
+        else:
+            old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+            catewd_sen = []
+            for token in old_mask_tokens:
+                if (token in lexicon_lst) and (token not in stop_lst):
+                    catewd_sen.append(token)
 
-            if (token in vocab_lst):# and (wd_cate >= median_cate):
-                catewd_sen.append(token)
-        catewd_sens.append(catewd_sen)
+            catewd_sens.append(catewd_sen)
+
 
     ds.train["cate_wds"] = catewd_sens
     pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
+
+def get_top_wd(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    vocab_df = ds.antonym_vocab
+    df = ds.train
+    top_df = ds.top_terms
+    top_lst = top_df.term.values.tolist()
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    ds.train["dataset_ids"] = dataset_id
+
+    stop_lst = stopwords.words('english')
+
+    catewd_sens = []
+
+    for ids, cate, index_vocab in tzip(dataset_id[:],
+                                      ds.train["cate"].values.tolist()[:],
+                                      ds.train["index_vocab_sens"].values.tolist()[:]):
+        if len(index_vocab)==0:
+            catewd_sens.append([])
+        else:
+            old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+            catewd_sen = []
+            for token in old_mask_tokens:
+                if (token in top_lst) and (token not in stop_lst):
+                    catewd_sen.append(token)
+
+            catewd_sens.append(catewd_sen)
+
+
+    ds.train["cate_wds"] = catewd_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
+def get_cate_wd(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    vocab_df = ds.antonym_vocab
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    ds.train["dataset_ids"] = dataset_id
+
+    stop_lst = stopwords.words('english')
+
+    catewd_sens = []
+
+    for ids, cate, index_vocab in tzip(dataset_id[:],
+                                      ds.train["cate"].values.tolist()[:],
+                                      ds.train["index_vocab_sens"].values.tolist()[:]):
+        if len(index_vocab)==0:
+            catewd_sens.append([])
+        else:
+            old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+            # print(old_mask_tokens)
+            unstop_tokens_postion = []
+            for k, mask_token in enumerate(old_mask_tokens):
+                if mask_token in stop_lst:
+                    pass
+                else:
+                    unstop_tokens_postion.append(k)
+            # print(unstop_tokens_postion)
+
+            cate = np.array(cate)
+            cate = cate[unstop_tokens_postion]
+            index_vocab = np.array(index_vocab)
+            index_vocab = index_vocab[unstop_tokens_postion]
+            index_cate_dic= {}
+            for x, y in zip(index_vocab, cate):
+                index_cate_dic[x]=y
+            sorted_index_cate_dic = sorted(index_cate_dic.items(), key=lambda x: x[1], reverse=True)
+            catewd_sen = []
+            for (k,v) in sorted_index_cate_dic:
+                imp_word = tokenizer.convert_ids_to_tokens(ids[k])
+                ant_dic = vocab_df[vocab_df["term"]==imp_word]["antonyms"].values.tolist()[0]
+
+                if ant_dic != "{}":
+                    catewd_sen.append(imp_word)
+                    syn_wds = vocab_df[vocab_df["term"]==imp_word]["synonyms"].values.tolist()[0]
+                    catewd_sen.extend(syn_wds)
+
+                    break
+            catewd_sens.append(catewd_sen)
+
+
+    ds.train["cate_wds"] = catewd_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+def get_cate_wd_same_coef(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    vocab_df = ds.antonym_vocab
+    df = ds.train
+    top_df = ds.top_terms
+    top_lst = top_df.term.values.tolist()
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    ds.train["dataset_ids"] = dataset_id
+
+    stop_lst = stopwords.words('english')
+
+    catewd_sens = []
+
+    for ids, cate, index_vocab in tzip(dataset_id[:],
+                                      ds.train["cate"].values.tolist()[:],
+                                      ds.train["index_vocab_sens"].values.tolist()[:]):
+        if len(index_vocab)==0:
+            catewd_sens.append([])
+        else:
+            old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+            # print(old_mask_tokens)
+            unstop_tokens_postion = []
+            for k, mask_token in enumerate(old_mask_tokens):
+                if mask_token in stop_lst:
+                    pass
+                else:
+                    unstop_tokens_postion.append(k)
+            # print(unstop_tokens_postion)
+
+            cate = np.array(cate)
+            cate = cate[unstop_tokens_postion]
+            index_vocab = np.array(index_vocab)
+            index_vocab = index_vocab[unstop_tokens_postion]
+            index_cate_dic= {}
+            for x, y in zip(index_vocab, cate):
+                index_cate_dic[x]=y
+            sorted_index_cate_dic = sorted(index_cate_dic.items(), key=lambda x: x[1], reverse=True)
+            catewd_sen = []
+            for (k,v) in sorted_index_cate_dic:
+                imp_word = tokenizer.convert_ids_to_tokens(ids[k])
+                # ant_dic = vocab_df[vocab_df["term"]==imp_word]["antonyms"].values.tolist()
+                ant_lst = get_snt(imp_word)
+                # if len(syn_wds)>0:
+                #     syn_ant_lst = [vocab_df[vocab_df["term"] == x]["antonyms"].values.tolist()[0] for x in syn_wds]
+                #     syn_ant_lst.extend(ant_dic)
+                #     ant_dic = list(set(syn_ant_lst))
+
+                # if len(ant_dic)==1 and ant_dic[0] != "{}":
+                if len(ant_lst)!=0:
+                    syn_wds = vocab_df[vocab_df["term"] == imp_word]["synonyms"].values.tolist()[0]
+
+                    imp_coef = vocab_df[vocab_df["term"] == imp_word]["coef"].values.tolist()[0]
+                    catewd_sen.append(imp_word)
+                    catewd_sen.extend(syn_wds)
+                    new_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+                    for token in new_mask_tokens:
+                        token_coef = vocab_df[vocab_df["term"] == token]["coef"].values.tolist()[0]
+                        if imp_coef*token_coef>0 and (imp_word in top_lst):
+                            catewd_sen.append(token)
+                    break
+
+            catewd_sens.append(catewd_sen)
+
+
+    ds.train["cate_wds"] = catewd_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
 def generate_ct_sentences(data_name):
     """
@@ -124,22 +334,29 @@ def generate_ct_sentences(data_name):
     """
     random.seed(42)
     ds = load_pkl(Config.DATA_DIC[data_name])
-    top_df = ds.top_terms
-    top_lst = top_df.term.values.tolist()
+    vocab_df = ds.antonym_vocab
+    # top_df = ds.top_terms
+    # top_lst = top_df.term.values.tolist()
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
     ct_text_cate = []
-    for cate_sen,ids in zip(ds.cate,
-                            ds.train["dataset_id"].values.tolist()):
-        # print(len(row["cate_wds"]))
+
+    for cate_sen,ids in tzip(ds.train["cate_wds"].values.tolist()[:],
+                             ds.train["dataset_id"].values.tolist()[:]):
+                             # ds.train["index_vocab_sens"].values.tolist()):
+        # print(ids)
+        # print("cate_sen", cate_sen)
         # break
         tokens = tokenizer.convert_ids_to_tokens(ids)
-        cate_top = [w_cate for token, w_cate in zip(tokens, cate_sen) if token in top_lst]
-        if len(cate_top) > 0:
+        # print(tokens)
+        # cate_top = [w_cate for token, w_cate in zip(tokens, cate_sen) if token in top_lst]
+        if len(cate_sen) > 0:
             new_wds = []
-            for token, wd_cate in zip(tokens, cate_sen):
-                median_cate = np.median(cate_top)
-                if (token in top_lst) and (wd_cate >= median_cate):
-                    sub_w = list(top_df[top_df['term'] == token].antonyms.values[0].keys())
+            for token in tokens:
+                # print(token)
+                if token in cate_sen:# and len(get_snt(token))!=0:
+                    sub_w = list(eval(vocab_df[vocab_df['term'] == token].antonyms.values[0]).keys())
+                    # print(token,sub_w)
                     if (len(sub_w) == 1):
                         ct_wd = str(sub_w[0])
                     elif (len(sub_w) > 1):
@@ -149,13 +366,13 @@ def generate_ct_sentences(data_name):
                     new_wds.append(ct_wd)
                 else:
                     new_wds.append(token)
-
             if (new_wds == tokens):  # no antonym for the causal word
                 ct_text_cate.append(' ')
             else:
                 ct_text_cate.append(tokenizer.convert_tokens_to_string(new_wds[1:-1]))
         else:  # no causal words here
             ct_text_cate.append(' ')
+
     ds.train["ct_text_cate"] = ct_text_cate
     pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
@@ -168,6 +385,7 @@ def organize_data(ds, limit=''):
 
     """
     train_data = {}
+
 
     if (limit == 'ct'):  # only those have counterfactuals as original data
         ds.train['len_ct_text_causal'] = ds.train['ct_text_causal'].apply(lambda x: len(x.strip()))
@@ -284,33 +502,51 @@ def here():
     ...
 if __name__=='__main__':
     data_name = "IMDB-S"
-    # delta_T = np.load("data/AMI EVALITA 2018/deltaT_sens.npy", allow_pickle=True)
-    # delta_Y = np.load("data/AMI EVALITA 2018/deltaY_sens.npy", allow_pickle=True)
-    # save_cate(data_name)
-    # get_cate_wd(data_name)
-    # generate_ct_sentences(data_name)
-    get_data_glove_syn()
+    # # data_name = "IMDB-L"
+    # # data_name="KINDLE"
+    #
+    print(data_name, "save_cate")
+    save_cate(data_name,scale=False)
+    print(data_name, "get_cate_wd")
+    get_lexicon_wd(data_name)
+    # get_top_wd(data_name)
+    # # get_cate_wd(data_name)
+    # get_cate_wd_same_coef(data_name)
+    print(data_name, "generate_ct_sentences")
+    generate_ct_sentences(data_name)
+    # # ds = load_pkl("data_before11.3/IMDB-S/ori/ds_imdb_sent.pkl")
     ds = load_pkl(Config.DATA_DIC[data_name])
-    i= 2
-    for text,cate,wd,human in zip(ds.train["text"].values.tolist()[i:],
+    train_data, test_data = organize_data(ds, limit='')
+    df_result = classification_performance(train_data, test_data)
+    print(df_result)
+
+
+    # data_name="IMDB-S"
+def sample_wds(i):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    for text,cate,cate_wd,ct_text_causal,ct_causal_wds in zip(ds.train["text"].values.tolist()[i:],
                             ds.train["ct_text_cate"].values.tolist()[i:],
                           ds.train["cate_wds"].values.tolist()[i:],
-                          ds.train_ct["text"].values.tolist()[i:]):
+                        ds.train["ct_text_causal"].values.tolist()[i:],
+                        ds.train["ct_causal_wds"].values.tolist()[i:],
+                          ):
         print("original text: ",text)
-        print("cate:", cate,"======= generated by",wd)
-        print("human:",human)
+        print("cate:", cate,"======= generated by",cate_wd)
+        print("annotated_causal:", ct_text_causal, "======= generated by", ct_causal_wds)
         break
-    # train_data, test_data = organize_data(ds, limit='')
-    # df_result = classification_performance(train_data, test_data)
-    # df_result
+
+
+
 
 
 
 
     # s=0
     # y=0
-    # for i,(cate,causal,iden,text) in enumerate(zip(ds.train.cate_wds.values.tolist(),ds.train.causal_wds.values.tolist(),
-    #                                                ds.train.identified_causal_wds.values.tolist(),ds.train.text.values.tolist())):
+    # for i,(cate,causal,iden,text) in enumerate(zip(ds.train.cate_wds.values.tolist()[:50],
+    #                                                ds.train.causal_wds.values.tolist()[:50],
+    #                                                ds.train.identified_causal_wds.values.tolist()[:50],
+    #                                                ds.train.text.values.tolist())[:50]):
     #     # if len(cate)!=0:
     #     #     cate = sum([list(x.keys()) for x in cate],[])
     #
@@ -323,36 +559,52 @@ if __name__=='__main__':
     #     if iden==causal:
     #         y+=1
 
-    # delta_T = ds.deltaT_sens
-    # delta_Y = ds.deltaY_sens
-    # att_weight = delta_T
-    # att_label = []
-    # for ts,ys in zip(att_weight,delta_Y):
-    #     labels = []
-    #     for t,y in zip(ts,ys):
-    #         try:
-    #             labels.append(y/t)
-    #         except:
-    #             print(y,t)
-    #     att_label.append(labels)
-    # ds.cate = att_label
-    # pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
-    #
-    # # ds = load_pkl(Config.DATA_DIC[data_name])
-    # df = ds.train
-    #
-    # sentences = list(df['text'].values.astype('U'))
-    #
-    # tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    # encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
-    # dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
-    # i = 0
-    # for ids, labels, weights,ys in zip(dataset_id[i:],att_label[i:],att_weight[i:], delta_Y[i:]):
-    #     imp_word = tokenizer.convert_ids_to_tokens(ids[1+np.argmax(labels)])
-    #     # print(np)
-    #     print("the most important word:", imp_word,np.max(labels),weights[np.argmax(labels)])
-    #     print("word, deltaY/deltaT, deltaY, deltaT")
-    #     for id, lbl, wei, y in zip(ids[1:-1], labels, weights, ys):
-    #         token = tokenizer.convert_ids_to_tokens(id)
-    #         print(token,lbl,y,wei)
-    #     break
+
+# def sample(i):
+#     stop_lst = stopwords.words('english')
+#     for ids, labels, ts, ys, index_vocab in zip(dataset_id[i:],
+#                                                    ds.cate[i:],
+#                                                    delta_T[i:],
+#                                                    delta_Y[i:],
+#                                                    index_vocab_sens[i:]):
+#         ts = [[x] for x in ts]
+#         ys = [[x] for x in ys]
+#         ts = min_max_scaler.fit_transform(np.asarray(ts))
+#         ys = min_max_scaler.fit_transform(np.asarray(ys))
+#         ts = np.squeeze(ts,axis=-1)
+#         ys = np.squeeze(ys,axis=-1)
+#         old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+#         print(old_mask_tokens)
+#         unstop_tokens_postion = []
+#         for k, mask_token in enumerate(old_mask_tokens):
+#             if mask_token in stop_lst:
+#                 pass
+#             else:
+#                 unstop_tokens_postion.append(k)
+#         print(unstop_tokens_postion)
+#         labels = np.array(labels)
+#         labels = labels[unstop_tokens_postion]
+#         ts = np.array(ts)
+#         ts = ts[unstop_tokens_postion]
+#         ys = np.array(ys)
+#         ys = ys[unstop_tokens_postion]
+#         index_vocab = np.array(index_vocab)
+#         index_vocab = index_vocab[unstop_tokens_postion]
+#
+#
+#         imp_word = tokenizer.convert_ids_to_tokens(ids[index_vocab[np.argmax(labels)]])
+#         # print(np)
+#         tokens = tokenizer.convert_ids_to_tokens(ids)
+#         print(tokens)
+#         # print("cft text:", ds.train_ct.text.values.tolist()[i])
+#         print("the most important word:", imp_word, np.max(labels), ts[np.argmax(labels)])
+#         print("the fanyici of most important word:", ds.antonym_vocab[ds.antonym_vocab["term"]==imp_word]["antonyms"])
+#
+#         print("causal_words:", ds.train.causal_wds.values.tolist()[i])
+#         print("identified causal words", ds.train.ct_identified_causal_wds.values.tolist()[i])
+#         print("word, deltaY/deltaT, deltaY, deltaT")
+#
+#         for index, lbl, wei, y in zip(index_vocab, labels, ts, ys):
+#             token = tokenizer.convert_ids_to_tokens(ids[index])
+#             print(token,lbl,y,wei)
+#         break

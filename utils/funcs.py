@@ -86,7 +86,7 @@ def mask_all(dataset_id, attention_mask):
     return new_sens_ids, new_sens_att
 
 
-def mask_syn(input_ids,attention_masks,tokenizer):
+def mask_syn(input_ids,attention_masks,tokenizer,vocab_df):
 
     '''
     :param input_ids:
@@ -117,6 +117,7 @@ def mask_syn(input_ids,attention_masks,tokenizer):
     mask_atts_sens = []
     index_vocab_sens = []
     prob_ids_sens = []
+    print("getting the masked dataset")
     for ids, masks in zip(input_ids, attention_masks):
         tokens = tokenizer.convert_ids_to_tokens(ids)
 
@@ -128,8 +129,8 @@ def mask_syn(input_ids,attention_masks,tokenizer):
         for i, token in enumerate(tokens):
             if token in vocab_df.term.values.tolist():  # if this bert token in vocab
                 index_vocab.append(i)
-                syn_lst = vocab_df[vocab_df["term"] == tok]["synonyms"].values.tolist()[0]
-                mask_lst = [tok] + syn_lst  #these tokens in this sentence (if it exsists) need to be masked
+                syn_lst = vocab_df[vocab_df["term"] == token]["synonyms"].values.tolist()[0]
+                mask_lst = [token] + syn_lst  #these tokens in this sentence (if it exsists) need to be masked
 
                 index_prob_ids = []  # when i calculate the gold probs in this postion(i), I need sum the probs in those ids up.
                 for x in mask_lst:
@@ -164,7 +165,7 @@ def getTrainDevTensor(sentences, labels, model):
 
 
 
-def getMaskedTensor(sentences, labels, model):
+def getMaskedTensor(sentences, labels, model,vocab_df):
     # data_fp = Config.DATA_DIC[data_name]["train"]
     # df = pd.read_csv(data_fp, sep="\t", header=0)
     # ds = load_pkl(Config.DATA_DIC[data_name])
@@ -181,7 +182,7 @@ def getMaskedTensor(sentences, labels, model):
     input_ids = encoded_inputs["input_ids"]
     attention_masks = encoded_inputs["attention_mask"]
 
-    new_input_ids,new_attention_masks,_,_ = mask_syn(input_ids,attention_masks, tokenizer) #[num_samples, seq_len-2, seq_len]
+    new_input_ids,new_attention_masks,_,_ = mask_syn(input_ids,attention_masks, tokenizer,vocab_df) #[num_samples, seq_len-2, seq_len]
 
     new_labels = [[label]*len(new_mask_lst) for new_mask_lst,label in zip(new_attention_masks,labels)]
 
@@ -189,7 +190,7 @@ def getMaskedTensor(sentences, labels, model):
     new_attention_masks = torch.tensor(sum(new_attention_masks, []))
     new_labels = torch.tensor(sum(new_labels, []))
 
-    tensor_dataset = TensorDataset(new_input_ids, new_attention_masks,new_labels)
+    tensor_dataset = TensorDataset(new_input_ids, new_attention_masks, new_labels)
 
     return tensor_dataset
 
@@ -214,8 +215,8 @@ def getTrainDevLoader(model,data_name):
         train_data = getTrainDevTensor(Sen_train, Lbl_train, model)
         dev_data = getTrainDevTensor(Sen_dev, Lbl_dev, model)
     elif model.mode=="mask":
-        train_data = getMaskedTensor(Sen_train, Lbl_train, model)
-        dev_data = getMaskedTensor(Sen_dev, Lbl_dev, model)
+        train_data = getMaskedTensor(Sen_train, Lbl_train, model, ds.antonym_vocab)
+        dev_data = getMaskedTensor(Sen_dev, Lbl_dev, model, ds.antonym_vocab)
 
     train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=model.batch_size)
     dev_dataloader = DataLoader(dev_data, sampler=SequentialSampler(dev_data), batch_size=model.batch_size)

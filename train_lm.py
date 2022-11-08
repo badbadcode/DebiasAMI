@@ -8,6 +8,7 @@ import torch.nn as nn
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
+from tqdm.contrib import tzip
 import os
 import pickle
 
@@ -17,7 +18,7 @@ from utils.config import Config
 from utils.data_class import Counterfactual
 
 
-def organize_data(df):
+def organize_data(ds):
     '''
 
     :param df:
@@ -28,21 +29,21 @@ def organize_data(df):
         index_vocab_sens: [num_samples, num_token_in_vocab]
         prob_ids_sens: [num_samples, num_token_in_vocab, num_syns_token]
     '''
-
+    df = ds.train
+    vocab_df = ds.antonym_vocab
     sentences = list(df['text'].values.astype('U'))
 
     encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
     dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
     attention_mask = encoded_inputs['attention_mask'] #label [num_samples, seq_len]
 
-    mask_sens_ids, _, index_vocab_sens, prob_ids_sens = mask_syn(dataset_id,attention_mask, tokenizer)
+    mask_sens_ids, _, index_vocab_sens, prob_ids_sens = mask_syn(dataset_id,attention_mask, tokenizer, vocab_df)
     '''
     dataset_id: [num_samples, seq_len]
     mask_sens_ids : [num_samples, num_token_in_vocab, seq_len]
     '''
-
     mask_sens_label = [[old_id]*len(mask_ids_lst) for mask_ids_lst, old_id in zip(mask_sens_ids,dataset_id)]
-    print(len(mask_sens_label), mask_sens_label[0])
+    # print(len(mask_sens_ids), mask_sens_ids[0])  # 1707, [num_token_in_vocab, seq_len]
     return dataset_id, mask_sens_ids, mask_sens_label, index_vocab_sens,prob_ids_sens
 
 
@@ -84,74 +85,94 @@ def pred(new_sens_ids,new_sens_label, index_vocab_sens, prob_ids_sens):
     :return:
     '''
     model = BertForMaskedLM.from_pretrained(model_path)
-    model.cuda()
+    if model.device == torch.device("cuda"):
+        model.cuda()
     deltaT_sens = []
-    for j,(ids,label,index_vocab, prob_ids) in enumerate(tqdm(zip(new_sens_ids,
+    for j,(ids,label,index_vocab, prob_ids) in enumerate(tzip(new_sens_ids,
                                                                   new_sens_label,
                                                                   index_vocab_sens,
-                                                                  prob_ids_sens))):
+                                                                  prob_ids_sens)):
         # (num_token_in_vocab, seq_len)
         tokens_tensor = torch.tensor(ids)
-        tokens_tensor = tokens_tensor.to('cuda')
-        with torch.no_grad():
-            outputs = model(tokens_tensor)#, output_hidden_states=True)
-            # embedding = outputs.hidden_states[0]
-            # print(embedding.size())   # (seq_len-2, seq_len, 768)
-            # print(type(outputs), len(outputs))  # <class 'transformers.modeling_outputs.MaskedLMOutput'> 2
-            # print(len(outputs.hidden_states)) #13
-            predictions = outputs.logits
-            # print(predictions.size()) # #(seq_len-2,seq_len,V)
-            probs = nn.functional.softmax(predictions, dim=2)
-            # print("the first mask sample of the first sample")
-            # print(tokenizer.convert_ids_to_tokens(ids[0]))
-            # print("the masked word is:",tokenizer.convert_ids_to_tokens(label[0][1]))
-            # top_k_values, top_k_indices = torch.topk(probs[0][1], 5, sorted=True)
-            # print("tok_k model predicted words:", tokenizer.convert_ids_to_tokens(top_k_indices))
-            # print("top_k value:",top_k_values)
-            # print("model predicts:", tokenizer.convert_ids_to_tokens(torch.argmax(probs[0][1],dim=-1).item()))
-            # print("the prob of the real masked word :", probs[0][1][label[0][1]])
+        tokens_tensor = tokens_tensor.to(model.device)
+        if tokens_tensor.size()[0] == 0:
+            deltaT_sens.append([])
+        else:
+            with torch.no_grad():
+                outputs = model(tokens_tensor)#, output_hidden_states=True)
+                # embedding = outputs.hidden_states[0]
+                # print(embedding.size())   # (seq_len-2, seq_len, 768)
+                # print(type(outputs), len(outputs))  # <class 'transformers.modeling_outputs.MaskedLMOutput'> 2
+                # print(len(outputs.hidden_states)) #13
+                predictions = outputs.logits
+                # print(predictions.size()) # #(seq_len-2,seq_len,V)
+                probs = nn.functional.softmax(predictions, dim=2)
+                # print("the first mask sample of the first sample")
+                # print(tokenizer.convert_ids_to_tokens(ids[0]))
+                # print("the masked word is:",tokenizer.convert_ids_to_tokens(label[0][1]))
+                # top_k_values, top_k_indices = torch.topk(probs[0][1], 5, sorted=True)
+                # print("tok_k model predicted words:", tokenizer.convert_ids_to_tokens(top_k_indices))
+                # print("top_k value:",top_k_values)
+                # print("model predicts:", tokenizer.convert_ids_to_tokens(torch.argmax(probs[0][1],dim=-1).item()))
+                # print("the prob of the real masked word :", probs[0][1][label[0][1]])
+                # # print(ids)
 
-            probs = probs.detach().cpu().numpy() #(num_token_in_vocab,seq_len,V)
+                probs = probs.detach().cpu().numpy() #(num_token_in_vocab,seq_len,V)
 
-            deltaT = []
+                deltaT = []
 
-            # probs_ids: [num_token_in_vocab, num_syns_token]
-            for i in range(len(index_vocab)):  # num_token_in_vocab
-                token_pos = index_vocab[i]
-                p_sum = 0
-                for prob_id_tok in prob_ids[i]:
-                    p_sum = p_sum + probs[i][token_pos][prob_id_tok]
-                deltaT.append(1-p_sum)
-            deltaT_sens.append(deltaT)
-            print(deltaT_sens)
-            break
+                # probs_ids: [num_token_in_vocab, num_syns_token]
+                for i in range(len(index_vocab)):  # num_token_in_vocab
+                    token_pos = index_vocab[i]
+                    p_sum = 0
+                    for prob_id_tok in prob_ids[i]:
+                        p_sum = p_sum + probs[i][token_pos][prob_id_tok]
+                    deltaT.append(1-p_sum)
 
-    print(deltaT_sens[:2])
+                # for check_index in range(len(index_vocab)):
+                #     print("\nthe first mask sample of the first sample-->",tokenizer.convert_ids_to_tokens(ids[check_index]))
+                #     token_pos = index_vocab[check_index]
+                #     print("the index of the mask word:", token_pos)
+                #     print("the masked word is:",tokenizer.convert_ids_to_tokens(label[check_index][token_pos]))
+                #     top_k_values, top_k_indices = torch.topk(probs[check_index][token_pos], 5, sorted=True)
+                #     print("tok_k model predicted words:", tokenizer.convert_ids_to_tokens(top_k_indices))
+                #     print("top_k value:",top_k_values)
+                #     sysn_wors = tokenizer.convert_ids_to_tokens(prob_ids[check_index])
+                #     print("the sysn of this word is",sysn_wors)
+                #
+                #     print("the sysn's prob is", [probs[check_index][token_pos][sy] for sy in prob_ids[check_index]])
+                #
+                #     print("model predicts:", tokenizer.convert_ids_to_tokens(torch.argmax(probs[check_index][token_pos],dim=-1).item()))
+                #     print("the prob of the real masked word :", probs[check_index][token_pos][label[check_index][token_pos]])
+                #     print("the 1-p_sum",deltaT[check_index])
+
+                deltaT_sens.append(deltaT)
+                # if j == 3:
+                #     break
+
+    # print(deltaT_sens)
     return deltaT_sens
 
 
 if __name__ == '__main__':
     # import data and process the data into token numbers
-    data_name = "IMDB-L"
-    model_path = f'saved_model/lm/{data_name}'
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    for data_name in ["IMDB-S","IMDB-L","KINDLE"]:
+        model_path = f'saved_model/lm/{data_name}'
+        tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
-    ds = load_pkl(Config.DATA_DIC[data_name])
-    df = ds.train
-    dataset_id, mask_sens_ids, mask_sens_label, index_vocab_sens, prob_ids_sens = organize_data(df)
+        ds = load_pkl(Config.DATA_DIC[data_name])
+        # df = ds.train
+        dataset_id, mask_sens_ids, mask_sens_label, index_vocab_sens, prob_ids_sens = organize_data(ds)
 
-    if not os.path.exists(model_path):
-        train(dataset_id)
-        print("training is finished")
-    else:
-        print(f"to load lm model from {model_path}")
+        if not os.path.exists(model_path):
+            train(dataset_id)
+            print("training is finished")
+        else:
+            print(f"to load lm model from {model_path}")
 
-    deltaT_sens = pred(mask_sens_ids, mask_sens_label, index_vocab_sens, prob_ids_sens)
-
-    print(deltaT_sens)
-
-    ds.deltaT_sens = deltaT_sens
-    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+        deltaT_sens = pred(mask_sens_ids, mask_sens_label, index_vocab_sens, prob_ids_sens)
+        ds.deltaT_sens = deltaT_sens
+        pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
 
 
 

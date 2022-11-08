@@ -1,13 +1,14 @@
-from transformers import AdamW, get_linear_schedule_with_warmup
+from transformers import AdamW, get_linear_schedule_with_warmup,AutoTokenizer
 from tqdm import tqdm
+from tqdm.contrib import tzip
 import numpy as np
 import torch
 import pickle
 import os
 from sklearn.metrics import accuracy_score,f1_score
 
-from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, getMaskedInput, check_dir
-from utils.funcs import load_pkl
+from utils.funcs import SetupSeed, getModel, getTrainDevLoader, getTestLoader, check_dir
+from utils.funcs import load_pkl, mask_syn
 from utils.earlystopping import EarlyStopping
 from utils.config import Config
 
@@ -106,32 +107,49 @@ def train(model, train_dataloader):
     print("Best epoch is :", best_epoch)
 
 
-def predictDeltaY(model):
+def predictDeltaY(model,ds):
     '''
     有的unbiased测试集，我们没有标签，评估的方式也不是通过标签，而是group之间的差异
     :param model:
     :return:
     '''
 
-    new_input_ids, new_attention_masks, new_labels, index_vocab, prob_ids_sens = getMaskedInput(model, data_name)
+    df = ds.train
+    vocab_df = ds.antonym_vocab
+    sentences = list(df['text'].values.astype('U'))
+    # print(sentences[:5])
+    df.loc[df["label"] == -1, "label"] = 0
+    print(df["label"].value_counts())
+    labels = torch.tensor(df["label"].tolist())
 
+    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+    # print("sentences", len(sentences),sentences[:5])
+    encoded_inputs = tokenizer(sentences, padding='max_length',truncation=True, max_length=model.max_len)
+    input_ids = encoded_inputs["input_ids"]
+    attention_masks = encoded_inputs["attention_mask"]
+
+    new_input_ids, new_attention_masks, index_vocab, prob_ids_sens = mask_syn(input_ids,attention_masks, tokenizer,vocab_df) #[num_samples, seq_len-2, seq_len]
+    new_labels = [[label]*len(new_mask_lst) for new_mask_lst,label in zip(new_attention_masks,labels)]
 
     deltaY_sens = []
 
     with torch.no_grad():
-        for step, (id,mask,label) in enumerate(tqdm(zip(new_input_ids, new_attention_masks, new_labels))):
+        for step, (id,mask,label) in enumerate(tzip(new_input_ids, new_attention_masks, new_labels)):
 
             b_input_ids = torch.tensor(id).to(model.device)
             b_input_mask = torch.tensor(mask).to(model.device)
             b_labels = torch.tensor(label).to(model.device)
 
-            dev_probs2_batch, dev_loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
-            # print(dev_probs2_batch)
-            # print(b_labels)
-            dev_probs0_batch = dev_probs2_batch[range(b_labels.size()[0]),1-b_labels]
-            # print(dev_probs1_batch)
-            dev_probs0_batch = dev_probs0_batch.detach().cpu()
-            deltaY_sens.append(dev_probs0_batch.tolist())
+            # print(step,b_input_ids.size())
+            if b_input_ids.size()[0] == 0:
+                deltaY_sens.append([])
+            else:
+                dev_probs2_batch, dev_loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
+                # print(b_labels)
+                dev_probs0_batch = dev_probs2_batch[range(b_labels.size()[0]),1-b_labels]
+                # print(dev_probs1_batch)
+                dev_probs0_batch = dev_probs0_batch.detach().cpu()
+                deltaY_sens.append(dev_probs0_batch.tolist())
     # deltaY_sens = np.asarray(deltaY_sens)
 
     return deltaY_sens
@@ -141,35 +159,36 @@ def predictDeltaY(model):
 # 当该module被其它module 引入使用时，其中的"if __name__=="__main__":"所表示的Block不会被执行
 if __name__=="__main__":
 
-    data_name = "IMDB-L"
-    model_shortcut = "b-ft"
-    seed = 42
-    SetupSeed(seed)
+    # data_name = "IMDB-L"
+    for data_name in ["IMDB-S","IMDB-L","KINDLE"]:
+        model_shortcut = "b-ft"
+        seed = 42
+        SetupSeed(seed)
 
-    model = getModel(model_shortcut, data_name, seed, mode="mask")
+        model = getModel(model_shortcut, data_name, seed, mode="mask")
 
-    check_dir(model.save_model_path)
+        check_dir(model.save_model_path)
 
-    train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
-    test_dataloader = getTestLoader(model, data_name, "test")
-    # unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
-    # train(model, train_dataloader)
-    if not os.path.exists(model.save_model_path):
-        train(model,train_dataloader)
-        print("training is finished")
-    else:
-        model.load_state_dict(torch.load(model.save_model_path))
-        print(f"model is loaded from {model.save_model_path}")
+        train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
+        test_dataloader = getTestLoader(model, data_name, "test")
+        # unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
+        # train(model, train_dataloader)
+        if not os.path.exists(model.save_model_path):
+            train(model,train_dataloader)
+            print("training is finished")
+        else:
+            model.load_state_dict(torch.load(model.save_model_path))
+            print(f"model is loaded from {model.save_model_path}")
 
-    if model.device == torch.device("cuda"):
-        model.cuda()
-    _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
-    print("test_acc", test_acc,"test_f1",test_f1)
-    #
-    # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
-    # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
+        if model.device == torch.device("cuda"):
+            model.cuda()
+        _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
+        print("test_acc", test_acc,"test_f1",test_f1)
+        #
+        # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
+        # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
 
-    ds = load_pkl(Config.DATA_DIC[data_name])
-    ds.deltaY_sens = predictDeltaY(model)
-    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
-    # np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)
+        ds = load_pkl(Config.DATA_DIC[data_name])
+        ds.deltaY_sens = predictDeltaY(model, ds)
+        pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+        # np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)
