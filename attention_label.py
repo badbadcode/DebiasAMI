@@ -1,35 +1,184 @@
 import numpy as np
 from transformers import BertTokenizer
 import pandas as pd
-from utils.data_class import Counterfactual
 import random
 from utils.config import Config
 import pickle
-import re
-import io, time
-from itertools import combinations, cycle, product
-import sklearn
-from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
-from sklearn.metrics import roc_auc_score
-from sklearn.metrics.pairwise import cosine_similarity
+from itertools import product
+from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import KFold, cross_val_score, train_test_split
-from sklearn.metrics import classification_report, accuracy_score
-from pydictionary import Dictionary
-from gensim import utils
-from gensim.models import Word2Vec
-from gensim.scripts.glove2word2vec import glove2word2vec
+from sklearn.metrics import classification_report
 from gensim.models import KeyedVectors
 from tqdm import tqdm
 from tqdm.contrib import tzip
 from sklearn import preprocessing
 from nltk.corpus import stopwords
+from torchtext.data import get_tokenizer
+from utils.funcs import getVocab,getTrainSenLabel
+from scipy import stats
+from collections import Counter
+
 
 def load_pkl(path):
     pickle_file = open(path,'rb')
     data = pickle.load(pickle_file)
     pickle_file.close()
     return data
+
+def check_domain_words(data_name):
+    data_name = "IMDB-S"
+    sentences, label = getTrainSenLabel(data_name)
+    vec = CountVectorizer(min_df=3, binary=False, max_df=.8, stop_words="english")
+    vec.fit(sentences)
+    vec_train = vec.transform(sentences)
+    vec_train = np.asarray(vec_train.todense())
+    counts = np.sum(vec_train, axis=0)
+    count_dic = {}
+    for k,v in vec.vocabulary_.items():
+        count_dic[k] = counts[v]
+    sorted_coef_dic = sorted(count_dic.items(), key=lambda kv: (kv[1], kv[0]), reverse=True)
+    print("此处需要人工筛选领域词")
+    domain_words = ["movie", "film", "story", "movies", "plot", "films", "performance", "performances", "script",
+                    "actor", "actress", "cast", "acting", "actors", "actresses", "action", "played",
+                    "characters", "character", "scenes", "scene", "role", "music", "director", "line",
+                    "portrayal","series","westerns","piece"]
+
+
+    glove_data_file = f'resource/glove/glove.{data_name}.300d.txt'
+    glove_model = KeyedVectors.load_word2vec_format(glove_data_file, binary=False, no_header=True)
+    synonyms_list = []
+
+    for word in domain_words:
+
+        try:
+            synonyms_tuple = glove_model.most_similar(word, topn=5)
+            synonyms = [w for w, sim in synonyms_tuple if sim >= 0.75]
+            for syn in synonyms:
+                if syn not in domain_words and syn in list(vec.vocabulary_.keys()):
+                    synonyms_list.append(syn)
+        except:
+            continue
+    domain_words.extend(synonyms_list)
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    ds.domain_words = domain_words
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
+def judgeCon1(vec_word_gender0, label_gender0):
+    res_cond1 = False
+    sum_res = vec_word_gender0 + label_gender0
+    count = Counter(sum_res.tolist())
+    word0_y0_num = count[-1]
+    word0_y1_num = count[1]
+    word1_y0_num = count[0]
+    word1_y1_num = count[2]
+    word_label = np.array([[word0_y0_num, word0_y1_num],
+                           [word1_y0_num, word1_y1_num]])
+
+    p_value = stats.chi2_contingency(word_label, correction=True)[1]
+
+    if p_value < 0.1:
+        res_cond1 = True
+    return res_cond1
+
+
+def judgeCon2(vec_word_gender0, vec_word_gender1):
+    res_cond2 = False
+    '''
+    k-s 检验, only for continuous distribution
+    '''
+    # res = stats.kstest(vec_word_gender0,vec_word_gender1)
+    # p_value = res.pvalue
+    # if p_value<0.1: #拒绝原假设(X|T=0，X|T=1 分布相同)
+    #     res_cond2 = True
+    '''
+    二项分布检验
+    '''
+    p = np.sum(vec_word_gender1) / vec_word_gender1.shape[0]
+    k = np.sum(vec_word_gender0)
+    n = vec_word_gender0.shape[0]
+    p_value = stats.binomtest(k, n=n, p=p, alternative='greater').pvalue
+
+    if p_value < 0.1:  # 拒绝原假设(X|T=0，X|T=1 分布相同)
+        res_cond2 = True
+    return res_cond2
+
+
+def get_cfder(covariates, vec_sens_gender0, vec_sens_gender1, vec_dic, label_gender0):
+    cond1 = []
+    cond2 = []
+    confouder_for_gender = []
+
+    for word in tqdm(covariates):
+        vec_word_gender0 = vec_sens_gender0[:, vec_dic[word]]
+        vec_word_gender1 = vec_sens_gender1[:, vec_dic[word]]
+        try:
+            res1 = judgeCon1(vec_word_gender0, label_gender0)
+            res2 = judgeCon2(vec_word_gender0, vec_word_gender1)
+        except:
+            continue
+        cond1.append(res1)
+        cond2.append(res2)
+        if res1 and res2:
+            confouder_for_gender.append(word)
+    return confouder_for_gender
+
+
+def get_cfder_wd(data_name):
+    # data_name = "AMI"
+    data_name = "IMDB-S"
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    domain_words = ds.domain_words
+    domain_words = ['movie', 'film', 'story', 'movies', 'films',
+                    # 'performance', 'performances', 'script', 'actor', 'actress',
+                    # 'cast', 'acting', 'actors', 'actresses', 'action', 'played',
+                    # 'characters', 'character', 'scenes', 'scene', 'plot',
+                    # 'role', 'music', 'director', 'line', 'plots', 'casting',
+                    # 'acted', 'play', 'plays', 'lines'
+                    ]
+
+    sentences, label = getTrainSenLabel(data_name)
+    label = label.numpy()
+    label = np.where(label == 1, label, -1 * np.ones_like(label))
+
+    vec = CountVectorizer(min_df=3, binary=True, max_df=.8, stop_words="english")
+    vec.fit(sentences)
+    vec_sens = np.asarray(vec.transform(sentences).todense())
+    vec_dic = vec.vocabulary_
+
+    covariates = []
+    vocab_gender_words = []
+    for word in list(vec.vocabulary_.keys()):
+        if word not in domain_words:
+            covariates.append(word)
+        else:
+            vocab_gender_words.append(word)
+
+    gender_id = [vec_dic[w] for w in vocab_gender_words]
+
+    vec_sens_gender = vec_sens[:, [gender_id]].reshape(vec_sens.shape[0], -1)
+    vec_sens_gender_sum = np.sum(vec_sens_gender, axis=-1)
+
+    gender0_raw = np.where(vec_sens_gender_sum == 0)[0]  # (num_samples_gender0,)
+    vec_sens_gender0 = vec_sens[gender0_raw, :]  # (num_samples_gender0, num_vocab)
+    label_gender0 = label[gender0_raw]  # (num_samples_gender0,)
+
+    gender1_raw = np.where(vec_sens_gender_sum != 0)[0]  # (num_samples_gender1,)
+    vec_sens_gender1 = vec_sens[gender1_raw, :]  # (num_samples_gender1, num_vocab)
+    # label_gender1 = label[gender1_raw]  # (num_samples_gender1,)
+    confouder_for_gender = get_cfder(covariates, vec_sens_gender0, vec_sens_gender1, vec_dic, label_gender0)
+
+    pos_words = open("resource/hate lexicon/positive-words.txt", encoding="ISO-8859-1").readlines()
+    neg_words = open("resource/hate lexicon/negative-words.txt", encoding="ISO-8859-1").readlines()
+    lexicon_lst = pos_words + neg_words
+    lexicon_lst = [x.strip() for x in lexicon_lst]
+
+    new_senti_words = []
+    for w in confouder_for_gender:
+        if w not in lexicon_lst:
+            new_senti_words.append(w)
+
+    return confouder_for_gender
 
 def get_snt(token):
     from nltk.corpus import wordnet as wn
@@ -38,6 +187,7 @@ def get_snt(token):
      walk_lemma.antonyms() != []]
 
     return ant
+
 def save_index_vocab(data_name):
     ds = load_pkl(Config.DATA_DIC[data_name])
     df = ds.train
@@ -208,6 +358,68 @@ def get_cate_wd(data_name):
     tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
     dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+    ds.train["dataset_ids"] = dataset_id
+
+    stop_lst = stopwords.words('english')
+
+    catewd_sens = []
+
+    for ids, cate, index_vocab in tzip(dataset_id[:],
+                                      ds.train["cate"].values.tolist()[:],
+                                      ds.train["index_vocab_sens"].values.tolist()[:]):
+        if len(index_vocab)==0:
+            catewd_sens.append([])
+        else:
+            old_mask_tokens = tokenizer.convert_ids_to_tokens([ids[position] for position in index_vocab])
+            # print(old_mask_tokens)
+            unstop_tokens_postion = []
+            for k, mask_token in enumerate(old_mask_tokens):
+                if mask_token in stop_lst:
+                    pass
+                else:
+                    unstop_tokens_postion.append(k)
+            # print(unstop_tokens_postion)
+
+            cate = np.array(cate)
+            cate = cate[unstop_tokens_postion]
+            index_vocab = np.array(index_vocab)
+            index_vocab = index_vocab[unstop_tokens_postion]
+            index_cate_dic= {}
+            for x, y in zip(index_vocab, cate):
+                index_cate_dic[x]=y
+            sorted_index_cate_dic = sorted(index_cate_dic.items(), key=lambda x: x[1], reverse=True)
+            catewd_sen = []
+            for (k,v) in sorted_index_cate_dic:
+                imp_word = tokenizer.convert_ids_to_tokens(ids[k])
+                ant_dic = vocab_df[vocab_df["term"]==imp_word]["antonyms"].values.tolist()[0]
+
+                if ant_dic != "{}":
+                    catewd_sen.append(imp_word)
+                    syn_wds = vocab_df[vocab_df["term"]==imp_word]["synonyms"].values.tolist()[0]
+                    catewd_sen.extend(syn_wds)
+
+                    break
+            catewd_sens.append(catewd_sen)
+
+
+    ds.train["cate_wds"] = catewd_sens
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+
+def get_cate_wd_lg(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    vocab_df = ds.antonym_vocab
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = get_tokenizer("basic_english")
+    data_vocab = getVocab(data_name)
+
+
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    encoded_inputs = tokenizer(sentences, max_length=80, truncation=True)
+    dataset_id = encoded_inputs['input_ids'] #label [num_samples, seq_len]
+
+
     ds.train["dataset_ids"] = dataset_id
 
     stop_lst = stopwords.words('english')

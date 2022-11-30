@@ -253,7 +253,7 @@ def start_train_reweight(batch_size=64, lr_model=1e-3, lr_w=1e-4, epochs=1000, l
     train_dataloader = DataLoader(train_dataset, batch_size=batch_size)
     dev_dataloader = DataLoader(dev_dataset, batch_size=batch_size)
 
-    fem_index = getGenderIndex(vec_type, data_name, only_female=False)
+    fem_index = getGenderIndex(vec_type, data_name, only_female=True)
     # print("fem_index", fem_index)
 
     optimizer = AdamW(model.parameters(), lr=lr_model)
@@ -415,7 +415,7 @@ seed = 42
 # 批大小
 batch_size = 20
 # 批数
-epochs = 500
+epochs = 50
 # 模型学习率，这里就是神经网络的模型参数
 lr = 1e-3
 # w学习率

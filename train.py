@@ -23,9 +23,9 @@ def eval(model,dev_dataloader):
             b_input_mask = batch[1].to(model.device)
             b_labels = batch[2].to(model.device)
 
-            dev_probs_batch, dev_loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
-            dev_losses.append(dev_loss_batch.mean().item())
-            dev_logits.append(dev_probs_batch)  # [tensor(batch_size,NUM_LABELS),tensor(batch_size,NUM_LABELS),.....]
+            dev_loss_dic = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
+            dev_losses.append(dev_loss_dic["loss"].mean().item())
+            dev_logits.append(dev_loss_dic["logits"])  # [tensor(batch_size,NUM_LABELS),tensor(batch_size,NUM_LABELS),.....]
             dev_labels.append(b_labels)
 
 
@@ -77,14 +77,14 @@ def train(model, train_dataloader):
             b_input_mask = batch[1].to(model.device)
             b_labels = batch[2].to(model.device)
             model.zero_grad()
-            _, loss_batch = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
+            loss_dic = model(input_ids=b_input_ids, input_mask=b_input_mask, labels=b_labels)
             # Perform a backward pass to calculate the gradients.
-            loss_batch.mean().backward()
+            loss_dic["loss"].mean().backward()
             optimizer.step()
             scheduler.step()
             if step % 100 == 0:
-                print(f'\t\t{step // 100}th 100 step loss:', loss_batch.mean())
-            train_losses.append(loss_batch.mean().item())
+                print(f'\t\t{step // 100}th 100 step loss:', loss_dic["loss"].mean())
+            train_losses.append(loss_dic["loss"].mean().item())
 
         train_loss = np.average(train_losses)  # 这个epoch的平均训练损失
         print(f'=========={model.model_shortcut} devloping ==========')
@@ -161,17 +161,19 @@ if __name__=="__main__":
 
     # data_name = "IMDB-L"
     for data_name in ["IMDB-S","IMDB-L","KINDLE"]:
-        model_shortcut = "b-ft"
+        model_shortcut = "gru"
         seed = 42
         SetupSeed(seed)
-
-        model = getModel(model_shortcut, data_name, seed, mode="mask")
-
+        model = getModel(model_shortcut=model_shortcut,
+                         data_name=data_name,
+                         seed=seed,
+                         mode=None,
+                         att_label_type=None)
         check_dir(model.save_model_path)
 
         train_dataloader, dev_dataloader = getTrainDevLoader(model, data_name)
         test_dataloader = getTestLoader(model, data_name, "test")
-        # unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
+        unbiased_dataloader = getTestLoader(model, data_name, "unbiased")
         # train(model, train_dataloader)
         if not os.path.exists(model.save_model_path):
             train(model,train_dataloader)
@@ -184,11 +186,11 @@ if __name__=="__main__":
             model.cuda()
         _, test_acc, test_f1,test_f1_w = eval(model, test_dataloader)
         print("test_acc", test_acc,"test_f1",test_f1)
-        #
-        # _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
-        # print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
 
-        ds = load_pkl(Config.DATA_DIC[data_name])
-        ds.deltaY_sens = predictDeltaY(model, ds)
-        pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+        _, unbiased_acc, unbiased_f1,unbiased_f1_w = eval(model, unbiased_dataloader)
+        print("unbiased_acc", unbiased_acc,"unbiased_f1",unbiased_f1)
+
+        # ds = load_pkl(Config.DATA_DIC[data_name])
+        # ds.deltaY_sens = predictDeltaY(model, ds)
+        # pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
         # np.save(f"data/AMI EVALITA 2018/deltaT_sens.npy", deltaY_sens)

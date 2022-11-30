@@ -10,10 +10,17 @@ import pickle
 import copy
 import numpy as np
 import random
-from utils.models import BertFT
+from utils.models import BertFT, BiGRUAttSup, BiGRUAtt
 from torch.utils.data import TensorDataset, DataLoader, RandomSampler, SequentialSampler
 from transformers import AutoTokenizer
 from sklearn.model_selection import train_test_split
+from torchtext.vocab import GloVe, Vocab
+from torchtext import data, datasets
+from torchtext.data import get_tokenizer, Dataset, Example
+from nltk.corpus import stopwords
+from tqdm import trange,tqdm
+from tqdm.contrib import tzip
+from collections import Counter, OrderedDict
 
 
 def SetupSeed(seed):
@@ -45,44 +52,56 @@ def load_pkl(path):
     return data
 
 
-def getModel(model_shortcut,data_name, seed, mode):
+
+def getModel(model_shortcut, data_name, seed, mode=None, att_label_type=None):
+    '''
+    :param model_shortcut:
+    :param data_name:
+    :param seed:
+    :param mode: "mask","normal","mask-lexicon","weight" for b-ft
+    :param att_label_type: "lexicon"/"cate"
+    :return: cudaed model
+    '''
 
     if model_shortcut == "b-ft":
         model = BertFT(data_name=data_name, seed=seed, mode=mode)
+    elif model_shortcut == "gru-att":
+        model = BiGRUAtt(data_name=data_name, seed=seed)
+    elif model_shortcut == "gru-att-sup":
+        model = BiGRUAttSup(data_name=data_name, att_label_type=att_label_type,seed=seed)
+
     if model.device == torch.device("cuda"):
         model.cuda()
-    # if model_shortcut == "bilstm":
-    #     model = SentiBiLSTMAtt(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data])
-    # elif model_shortcut == "cbilstm":
-    #     model = CausalSentiBiLSTMAtt(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data],mode=Config.MODE[model_shortcut])
-    #     # print("model.causal_t.Wy.weight", model.causal_t.Wy.weight)  # changed when it wants to change
-    # elif model_shortcut == "b":
-    #     model = SentiBERT(num_labels=Config.NUM_LABELS[train_data])
-    # elif model_shortcut == "cb":
-    #     model = CausalSentiBERT(num_labels=Config.NUM_LABELS[train_data], mode=Config.MODE[model_shortcut])
-    #     # print("model.causal_t.Wy.weight", model.causal_t.Wy.weight)  # changed when it wants to change
-    # elif model_shortcut == "panet":
-    #     model = PANet(n_vocab=Config.vocab_size[Config.tokenizer_name], num_labels=Config.NUM_LABELS[train_data])
-
     return model
 
 
-def mask_all(dataset_id, attention_mask):
+def mask_lexicon(dataset_id, attention_mask, tokenizer):
+    pos_words = open("resource/hate lexicon/positive-words.txt", encoding="ISO-8859-1").readlines()
+    neg_words = open("resource/hate lexicon/negative-words.txt", encoding="ISO-8859-1").readlines()
+    lexicon_lst = [x.strip() for x in pos_words + neg_words]
+    lexicon_ids = tokenizer.convert_tokens_to_ids(lexicon_lst)
+    new_lexicon_ids = []
+    for id in lexicon_ids:
+        if id != 100:
+            new_lexicon_ids.append(id)
     new_sens_ids = []
     new_sens_att = []
-    for old_sen_id,mask in zip(dataset_id,attention_mask):
-        sen_ids = []
-        sen_masks = []
-        seq_len = sum(mask)
-        for i in range(1,seq_len-1):
-            new_sen_id = copy.deepcopy(old_sen_id)
-            new_sen_id[i] = 103
-            sen_ids.append(new_sen_id)
-            sen_masks.append(mask)
 
-        new_sens_ids.append(sen_ids)
-        new_sens_att.append(sen_masks)
+    # print(type(dataset_id))
+    for sen_ids,mask in zip(dataset_id,attention_mask):
+        new_ids = []
+        for id,ma in zip(sen_ids,mask):
+            if ma == 1:
+                if id in new_lexicon_ids:
+                    new_ids.append(103)
+                else:
+                    new_ids.append(id)
+            else:
+                new_ids.append(id)
 
+        new_sens_ids.append(new_ids)
+        new_sens_att.append(mask)
+    print(new_sens_ids[0])
     return new_sens_ids, new_sens_att
 
 
@@ -151,72 +170,220 @@ def mask_syn(input_ids,attention_masks,tokenizer,vocab_df):
         prob_ids_sens.append(prob_ids_sen)
     return mask_ids_sens, mask_atts_sens, index_vocab_sens,prob_ids_sens
 
+def getTrainSenLabel(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
+    # print(sentences[:5])
+    if data_name=="AMI":
+        labels = torch.tensor(df["misogynous"].tolist())
+    else:
+        df.loc[df["label"]==-1,"label"]=0
+        print(df["label"].value_counts())
+        labels = torch.tensor(df["label"].tolist())
+    return sentences,labels
 
-def getTrainDevTensor(sentences, labels, model):
-    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
-    # print("sentences", len(sentences),sentences[:5])
-    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
-    input_ids = torch.tensor(encoded_inputs["input_ids"])
-    attention_masks = torch.tensor(encoded_inputs["attention_mask"])
+def getUnbiasedSen(data_name):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    if data_name == "AMI":
+        df = ds.unbiased
+        sentences = list(ds.unbiased['text'].values.astype('U'))
+    elif data_name == "IMDB-S":
+        df = ds.test_ct
+        sentences = list(ds.test_ct['text'].values.astype('U'))
+    else:
+        df = ds.test
+        sentences = list(ds.test['ct_text_amt'].values.astype('U'))
+    return sentences, df
 
-    tensor_dataset = TensorDataset(input_ids, attention_masks, labels)
-    return tensor_dataset
+
+def getVocab(data_name):
+    # data_name = "IMDB-S"
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    df = ds.train
+    sentences = list(df['text'].values.astype('U'))
+    tokenizer = get_tokenizer("basic_english")
+
+    counter = Counter(sum([tokenizer(sen) for sen in sentences], []))
+    # sorted_by_freq_tuples = sorted(counter.items(), key=lambda x: x[1], reverse=True)
+    # ordered_dict = OrderedDict(sorted_by_freq_tuples)
+    data_vocab = Vocab(counter, min_freq=5, vectors=GloVe(name='6B', dim=300))
+
+    vectors = data_vocab.vectors
+
+    ds.train_embed_matrix = vectors
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
+    return data_vocab
+
+def getGlovePaddedIdsMasks(data_name, sentences, model, split):
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    tokenizer = get_tokenizer("basic_english")
+    pos_words = open("resource/hate lexicon/positive-words.txt", encoding="ISO-8859-1").readlines()
+    neg_words = open("resource/hate lexicon/negative-words.txt", encoding="ISO-8859-1").readlines()
+    pos_words = [x.strip() for x in pos_words]
+    neg_words = [x.strip() for x in neg_words]
+
+    cate_dic = ds.lg_cate
+    data_vocab = getVocab(data_name)
+
+    input_ids = []
+    attention_masks = []
+    max_l = []
+    for i,sen in enumerate(sentences):
+        words = tokenizer(sen)
+        
+        max_l.append(len(words))
+        
+        if len(words) > model.max_len:
+            words = words[:model.max_len]
+        ids = []
+        atts = []
+        for word in words:
+            id = data_vocab.stoi[word]
+            ids.append(id)
+            if split in ["test","unbiased"]:
+                atts.append((0,0))
+            else:
+                if model.att_label_type =="cate":
+                    if word in cate_dic.keys():
+                        # print(cate_dic[word])
+                        t,y = cate_dic[word][i]
+                        # print(t,y)
+                        atts.append((t,y/t))
+                    else:
+                        atts.append((0,0))
+                elif model.att_label_type == "lexicon":
+                    if (word in pos_words) and id != 0:
+                        atts.append((1, 1))
+                    elif (word in neg_words) and id != 0:
+                        atts.append((1, 1))
+                    else:
+                        atts.append((0, 0))
+                else:
+                    atts.append((0, 0))
+
+        if len(ids)<model.max_len:
+            ids = ids + [1]*(model.max_len-len(ids))
+            atts = atts + [(0,0)]*(model.max_len-len(atts))
+        input_ids.append(ids)
+        attention_masks.append(atts)
+        # print(words,"\n",ids,"\n",atts)
+        # break
+    print("How many is the len of sentence longer than 128:", len(np.where(np.asarray(max_l)>128)[0].tolist())) #6
+    return input_ids,attention_masks
+
+def getGloveTrainDevSplitTensor(data_name, model):
+
+    sentences,labels = getTrainSenLabel(data_name)
+    # print(len(input_ids), len(input_ids[0]), len(input_ids[1]))  # 8173 80 80
+    # print(len(attention_masks), len(attention_masks[0]), len(attention_masks[1]))  # 8173 80 80
+
+    input_ids, attention_weight = getGlovePaddedIdsMasks(data_name, sentences, model, split="train")
+    X = [[id,att] for id,att in zip(input_ids,attention_weight)]
+    # print("X", X[0])
+    X_train, X_dev, y_train, y_dev = train_test_split(X, labels, test_size=0.2)
+    # print("X_train", X_train[0])
+
+    X_train_ids = [x[0] for x in X_train]
+    X_train_att = [x[1] for x in X_train]
+    # print("X_train_ids", X_train_ids[0]) #torch.Size([6538, 80])
+    # print("X_train_att", X_train_att[0]) #torch.Size([6538, 80, 2])
+    X_dev_ids = [x[0] for x in X_dev]
+    X_dev_att = [x[1] for x in X_dev]
+    # print(torch.tensor(X_train_ids).size())
+    # print(torch.tensor(X_train_att).size())
+    train_tensor_dataset = TensorDataset(torch.tensor(X_train_ids),
+                                         torch.tensor(X_train_att),
+                                         torch.tensor(y_train))
+    dev_tensor_dataset = TensorDataset(torch.tensor(X_dev_ids),
+                                        torch.tensor(X_dev_att),
+                                       torch.tensor(y_dev))
+
+    return train_tensor_dataset, dev_tensor_dataset
 
 
-
-
-def getMaskedTensor(sentences, labels, model,vocab_df):
-    # data_fp = Config.DATA_DIC[data_name]["train"]
-    # df = pd.read_csv(data_fp, sep="\t", header=0)
-    # ds = load_pkl(Config.DATA_DIC[data_name])
-    # df = ds.train
-    #
-    # sentences = list(df['text'].values.astype('U'))
-    # # print(sentences[:5])
-    # df.loc[df["label"]==-1,"label"]=0
-    # labels = torch.tensor(df["label"].tolist())
-
+def getBertMaskedTensor(sentences, labels, model,vocab_df):
     tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
     # print("sentences", len(sentences),sentences[:5])
     encoded_inputs = tokenizer(sentences, padding='max_length',truncation=True, max_length=model.max_len)
     input_ids = encoded_inputs["input_ids"]
     attention_masks = encoded_inputs["attention_mask"]
-
+    
     new_input_ids,new_attention_masks,_,_ = mask_syn(input_ids,attention_masks, tokenizer,vocab_df) #[num_samples, seq_len-2, seq_len]
-
-    new_labels = [[label]*len(new_mask_lst) for new_mask_lst,label in zip(new_attention_masks,labels)]
-
     new_input_ids = torch.tensor(sum(new_input_ids,[]))
     new_attention_masks = torch.tensor(sum(new_attention_masks, []))
+    
+    new_labels = [[label]*len(new_mask_lst) for new_mask_lst,label in zip(new_attention_masks,labels)]
     new_labels = torch.tensor(sum(new_labels, []))
-
+    
     tensor_dataset = TensorDataset(new_input_ids, new_attention_masks, new_labels)
-
+    
     return tensor_dataset
 
+def getBertTrainDevSplitTensor(data_name, model):
+
+    sentences, labels = getTrainSenLabel(data_name)
+
+    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+    # print("sentences", len(sentences),sentences[:5])
+    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
+    input_ids = encoded_inputs["input_ids"]
+    attention_masks = encoded_inputs["attention_mask"]
+
+    if model.mode == "weight":
+        ds = load_pkl(Config.DATA_DIC[data_name])
+        weight = ds.train["weight"].values.tolist()
+        weight = [[w] for w in weight]
+        X = [[id, att, w*len(id)] for id, att, w in zip(input_ids, attention_masks, weight)]
+        X_train, X_dev, y_train, y_dev = train_test_split(X, labels, test_size=0.2)
+        X_train_ids = [x[0] for x in X_train]
+        X_train_att = [x[1] for x in X_train]
+        X_train_w = [x[2] for x in X_train]
+        # print("X_train_ids", X_train_ids[0]) #torch.Size([6538, 80])
+        # print("X_train_att", X_train_att[0]) #torch.Size([6538, 80, 2])
+        X_dev_ids = [x[0] for x in X_dev]
+        X_dev_att = [x[1] for x in X_dev]
+        X_dev_w = [x[2] for x in X_dev]
+        train_tensor_dataset = TensorDataset(torch.tensor(X_train_ids),
+                                             torch.tensor(X_train_att),
+                                             torch.tensor(y_train),
+                                             torch.tensor(X_train_w)
+                                             )
+        dev_tensor_dataset = TensorDataset(torch.tensor(X_dev_ids), 
+                                           torch.tensor(X_dev_att),
+                                           torch.tensor(y_dev), 
+                                           torch.tensor(X_dev_w))
+    else:
+        if model.mode == "mask-lexicon":
+            input_ids, attention_masks = mask_lexicon(input_ids, attention_masks, tokenizer)
+        X = [[id, att] for id, att in zip(input_ids, attention_masks)]
+        X_train, X_dev, y_train, y_dev = train_test_split(X, labels, test_size=0.2)
+        X_train_ids = [x[0] for x in X_train]
+        X_train_att = [x[1] for x in X_train]
+        X_dev_ids = [x[0] for x in X_dev]
+        X_dev_att = [x[1] for x in X_dev]
+
+        train_tensor_dataset = TensorDataset(torch.tensor(X_train_ids),
+                                             torch.tensor(X_train_att),
+                                             torch.tensor(y_train))
+        dev_tensor_dataset = TensorDataset(torch.tensor(X_dev_ids),
+                                        torch.tensor(X_dev_att),
+                                           torch.tensor(y_dev))
+
+    return train_tensor_dataset, dev_tensor_dataset
 
 
 def getTrainDevLoader(model,data_name):
-
-    # data_fp = Config.DATA_DIC[data_name]["train"]
-    # df = pd.read_csv(data_fp, sep="\t", header=0)
-
-    ds = load_pkl(Config.DATA_DIC[data_name])
-    df = ds.train
-    sentences = list(df['text'].values.astype('U'))
-    # print(sentences[:5])
-    df.loc[df["label"]==-1,"label"]=0
-    print(df["label"].value_counts())
-    labels = torch.tensor(df["label"].tolist())
-
-    Sen_train, Sen_dev, Lbl_train, Lbl_dev = train_test_split(sentences, labels, test_size=0.2)
-    # print(Sen_dev[:5])
-    if model.mode=="normal":
-        train_data = getTrainDevTensor(Sen_train, Lbl_train, model)
-        dev_data = getTrainDevTensor(Sen_dev, Lbl_dev, model)
-    elif model.mode=="mask":
-        train_data = getMaskedTensor(Sen_train, Lbl_train, model, ds.antonym_vocab)
-        dev_data = getMaskedTensor(Sen_dev, Lbl_dev, model, ds.antonym_vocab)
+    if model.model_shortcut in ["b-ft"]:
+        if model.mode in ["normal", "mask-lexicon", "weight"]:
+            print("Loading the train data...")
+            train_data,dev_data = getBertTrainDevSplitTensor(data_name, model)
+        elif model.mode == "mask":  # mask all words and syns
+            train_data = getBertMaskedTensor(Sen_train, Lbl_train, model, ds.antonym_vocab)
+            dev_data = getBertMaskedTensor(Sen_dev, Lbl_dev, model, ds.antonym_vocab)
+    elif model.model_shortcut in ["gru-att", "gru-att-sup"]:
+        train_data, dev_data = getGloveTrainDevSplitTensor(data_name, model)
 
     train_dataloader = DataLoader(train_data, sampler=RandomSampler(train_data), batch_size=model.batch_size)
     dev_dataloader = DataLoader(dev_data, sampler=SequentialSampler(dev_data), batch_size=model.batch_size)
@@ -224,33 +391,88 @@ def getTrainDevLoader(model,data_name):
     return train_dataloader, dev_dataloader
 
 
+
 def getTestLoader(model, data_name, test_name):
-    # Has_label = Config.HAS_LABELS_TEST[data_name][test_name]
-    # data_fp = Config.DATA_DIC[data_name][test_name]
-    # df = pd.read_csv(data_fp, sep="\t", header=0)
+
     ds = load_pkl(Config.DATA_DIC[data_name])
     if test_name =="test":
         df = ds.test
+        sentences = list(df['text'].values.astype('U'))
     else:
-        df = ds.unbiased
+        sentences, df = getUnbiasedSen(data_name)
 
-    sentences = list(df['text'].values.astype('U'))
-    tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
-    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
-    input_ids = torch.tensor(encoded_inputs["input_ids"])
-    attention_masks = torch.tensor(encoded_inputs["attention_mask"])
+    if model.model_shortcut in ["b-ft"]:
+        tokenizer = AutoTokenizer.from_pretrained(model.model_name, do_lower_case=True)
+        encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=model.max_len)
+        input_ids = encoded_inputs["input_ids"]
+        attention_masks = encoded_inputs["attention_mask"]
+        # X = [[id, att] for id, att in zip(input_ids, attention_masks)]
+
+    elif model.model_shortcut in ["gru-att-sup", "gru-att"]:
+        input_ids,attention_masks = getGlovePaddedIdsMasks(data_name, sentences, model, split=test_name)
+        # X = [[id, att] for id, att in zip(input_ids, attention_masks)]
+    else:
+        print("this model_shortcut has not been defined.")
 
     if "label" in df.columns:
         df.loc[df["label"] == -1, "label"] = 0
         print(df["label"].value_counts())
         labels = torch.tensor(df["label"].tolist())
-        test_data = TensorDataset(input_ids, attention_masks, labels)
+        test_data = TensorDataset(torch.tensor(input_ids),
+                                  torch.tensor(attention_masks),
+                                  labels)
+    elif "misogynous" in df.columns:
+        labels = torch.tensor(df["misogynous"].tolist())
+        test_data = TensorDataset(torch.tensor(input_ids),
+                                  torch.tensor(attention_masks),
+                                  labels)
     else:
-        test_data = TensorDataset(input_ids, attention_masks)
+        test_data = TensorDataset(torch.tensor(input_ids),
+                                  torch.tensor(attention_masks))
 
     test_dataloader = DataLoader(test_data, sampler=SequentialSampler(test_data), batch_size=model.batch_size)
 
     return test_dataloader
+
+
+def save_weight2ds(mask_model, data_name):
+    print("sequential train data loader")
+    ds = load_pkl(Config.DATA_DIC[data_name])
+    sentences, labels = getTrainSenLabel(data_name)
+    tokenizer = AutoTokenizer.from_pretrained(mask_model.model_name, do_lower_case=True)
+    # print("sentences", len(sentences),sentences[:5])
+    encoded_inputs = tokenizer(sentences, padding='max_length', truncation=True, max_length=mask_model.max_len)
+    input_ids = encoded_inputs["input_ids"]
+    attention_masks = encoded_inputs["attention_mask"]
+
+    input_ids, attention_masks = mask_lexicon(input_ids, attention_masks, tokenizer)
+    tensor_dataset = TensorDataset(torch.tensor(input_ids),
+                                   torch.tensor(attention_masks),
+                                   torch.tensor(labels))
+    train_mask_dataloader = DataLoader(tensor_dataset,
+                                       sampler=SequentialSampler(tensor_dataset),
+                                       batch_size=mask_model.batch_size)
+    mask_model.eval()  # prep model for evaluation
+    dev_logits = []
+    with torch.no_grad():
+        for step, batch in enumerate(tqdm(train_mask_dataloader, ncols=70)):
+            b_input_ids = batch[0].to(mask_model.device)
+            b_input_mask = batch[1].to(mask_model.device)
+            dev_loss_dic = mask_model(input_ids=b_input_ids, input_mask=b_input_mask)
+            dev_logits.append(dev_loss_dic["logits"].cpu().numpy())  # [tensor(batch_size,NUM_LABELS),tensor(batch_size,NUM_LABELS),.....]
+    # calculate average loss over an epoch (all batches)
+    dev_logits = [x.tolist() for x in dev_logits]  # [num_batch,batch_size,num_labels]
+    dev_logits_flat = sum(dev_logits, [])
+    one_hot_weights = 1 / np.asarray(dev_logits_flat)
+    # one_hot_label = torch.nn.functional.one_hot(b_labels,num_classes=2)
+    weight = np.where(labels == 1,
+                      one_hot_weights[:, 1],
+                      one_hot_weights[:, 0])
+    print(type(weight))
+    print(weight)
+    ds.train["weight"] = weight
+    pickle.dump(ds, open(Config.DATA_DIC[data_name], "wb"))
+
 
 def check_dir(vec_fp):
     dir = "/".join(vec_fp.split("/")[:-1])
@@ -623,31 +845,66 @@ def getGenderIndex(vec_type, data_name, only_female=True):
     :param only_female: 是否将所有单词都看做是处置变量
     :return:
     '''
-    if only_female:
-        baseline_swap_list = [["woman", "man"],["girls","boys"], ["girl", "boy"], ["she", "he"], ["mother", "father"], ["daughter", "son"], ["gal", "guy"], ["female", "male"], ["her", "his"], ["herself", "himself"]]
-        female_words = [x[0] for x in baseline_swap_list]
-        if vec_type in ["onehot", "tfidf"]:
-            vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
-            # vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
-            vectorizer = pickle.load(open(vectorizer_path, "rb"))
-            vocab_dic = vectorizer.vocabulary_
-            gender_index = np.zeros(len(vocab_dic.keys()))
-            for x in female_words:
-                try:
-                    gender_index[vocab_dic[x]]=1
-                    # print(x)# no "gal","herself"
-                except:
-                    pass
-        else:
-            gender_index = np.ones(768)
-    else: #把所有单词当做处置变量
-        if vec_type in ["onehot", "tfidf"]:
-            vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
-            vectorizer = pickle.load(open(vectorizer_path, "rb"))
-            vocab_dic = vectorizer.vocabulary_
-            gender_index = np.ones(len(vocab_dic.keys()))
-        else:
-            gender_index = np.ones(768)
+    if data_name == "AMI":
+        if only_female:
+            baseline_swap_list = [["woman", "man"],["girls","boys"], ["girl", "boy"], ["she", "he"], ["mother", "father"], ["daughter", "son"], ["gal", "guy"], ["female", "male"], ["her", "his"], ["herself", "himself"]]
+            female_words = [x[0] for x in baseline_swap_list]
+            if vec_type in ["onehot", "tfidf"]:
+                vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
+                # vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+                vectorizer = pickle.load(open(vectorizer_path, "rb"))
+                vocab_dic = vectorizer.vocabulary_
+                gender_index = np.zeros(len(vocab_dic.keys()))
+                for x in female_words:
+                    try:
+                        gender_index[vocab_dic[x]]=1
+                        # print(x)# no "gal","herself"
+                    except:
+                        pass
+            else:
+                gender_index = np.ones(768)
+        else: #把所有单词当做处置变量
+            if vec_type in ["onehot", "tfidf"]:
+                vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
+                vectorizer = pickle.load(open(vectorizer_path, "rb"))
+                vocab_dic = vectorizer.vocabulary_
+                gender_index = np.ones(len(vocab_dic.keys()))
+            else:
+                gender_index = np.ones(768)
+    elif data_name in ["IMDB-S", "IMDB-L", "KINDLE"]:
+        pos_words = open("resource/hate lexicon/positive-words.txt", encoding="ISO-8859-1").readlines()
+        neg_words = open("resource/hate lexicon/negative-words.txt", encoding="ISO-8859-1").readlines()
+        lexicon_lst = pos_words + neg_words
+        lexicon_lst = [x.strip() for x in lexicon_lst]
+        if only_female:
+            if vec_type in ["onehot", "tfidf"]:
+                vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
+                # vectorizer_path = f"{Config.vectorizer_path}{vec_type}_vectorizer.pkl"
+                vectorizer = pickle.load(open(vectorizer_path, "rb"))
+                vocab_dic = vectorizer.vocabulary_
+                lexicon_lst_vocab = []
+                for x in lexicon_lst:
+                    if x in list(vocab_dic.keys()):
+                        lexicon_lst_vocab.append(x)
+
+                gender_index = np.ones(len(vocab_dic.keys()))
+                for x in lexicon_lst_vocab:
+                    try:
+                        gender_index[vocab_dic[x]]=0  # neutral words
+                        # print(x)# no "gal","herself"
+                    except:
+                        pass
+            else:
+                gender_index = np.ones(768)
+        else: #把所有单词当做处置变量
+            if vec_type in ["onehot", "tfidf"]:
+                vectorizer_path = f"{Config.DATA_DIR[data_name]}/tokenizer/{vec_type}_vectorizer.pkl"
+                vectorizer = pickle.load(open(vectorizer_path, "rb"))
+                vocab_dic = vectorizer.vocabulary_
+                gender_index = np.ones(len(vocab_dic.keys()))
+            else:
+                gender_index = np.ones(768)
+
 
     return gender_index
 

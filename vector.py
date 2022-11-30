@@ -5,10 +5,11 @@ import torch
 from transformers import BertForSequenceClassification
 from transformers import AutoTokenizer
 import numpy as np
-from my_utils import *
+from sklearn.feature_extraction.text import TfidfVectorizer,CountVectorizer
 from tqdm import tqdm
+from utils.config import Config
+from utils.funcs import check_dir
 import pickle
-
 def load_pkl(path):
     pickle_file = open(path,'rb')
     data = pickle.load(pickle_file)

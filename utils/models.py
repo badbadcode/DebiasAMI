@@ -4,6 +4,8 @@ from utils.config import Config
 from transformers import AutoTokenizer
 from transformers import BertForSequenceClassification
 import pickle
+import numpy as np
+import torch.nn.functional as F
 
 class Vector_NN_Classifier(nn.Module):
     #类变量
@@ -228,10 +230,10 @@ class BertFT(nn.Module):
     def __init__(self, data_name, seed, mode):
         super(BertFT, self).__init__()
         self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=Config.NUM_LABELS[data_name])
-        self.ffn = nn.Linear(self.bert.config.hidden_size, 2)
+        self.ffn = nn.Linear(self.bert.config.hidden_size, Config.NUM_LABELS[data_name])
 
         self.model_name = "bert-base-uncased"
-        self.mode = mode
+        self.mode = mode  # mask or normal
         self.model_shortcut = "b-ft"
         self.data_name = data_name
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
@@ -245,7 +247,7 @@ class BertFT(nn.Module):
         self.seed = seed
         self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}_{mode}.pt"
 
-    def forward(self, input_ids, input_mask, labels=None):
+    def forward(self, input_ids, input_mask, labels=None, haslabel=True):
         outputs = self.bert(input_ids,
                              token_type_ids=None,
                              attention_mask= input_mask, output_hidden_states=True)
@@ -254,46 +256,191 @@ class BertFT(nn.Module):
         z0 = outputs.hidden_states[-1][:, 0, :]  # the hidden_states of [CLS]
 
         logits = self.ffn(z0)
-        probs = nn.functional.softmax(logits,dim=1)
+
+        # probs = nn.functional.softmax(logits,dim=1)
         # print(probs.size())  # torch.Size([28, 2])
         # print(labels.size())  # torch.Size([28])
-        loss = nn.functional.cross_entropy(probs, labels)
-        return probs,loss
+        if haslabel:
+            loss = nn.functional.cross_entropy(logits, labels)
+            return {"logits":nn.functional.softmax(logits,dim=1),
+                    "prediction":logits.argmax(1),
+                    "loss":loss,
+                    "label":labels}
+        else:
+            return {"logits":nn.functional.softmax(logits,dim=1),
+                    "prediction":logits.argmax(1)
+                    }
 
-class BertFTatt(nn.Module):
+class BiGRU(nn.Module):
+    def __init__(self, data_name, hidden_size):
+        super(BiGRU, self).__init__()
+
+        self.dropout =0.2
+        self.hidden_size = hidden_size
+        self.embed_size = 300
+        self.num_layers = 1
+        # self.embedding = EmbedBERT()
+        ds = pickle.load(open(Config.DATA_DIC[data_name],'rb'))
+
+        word_embed = ds.train_embed_matrix #(n_vocab, dim)
+        #vocab_size, embedding_dim
+        word_embed = word_embed.to(torch.float32)
+        self.embedding = nn.Embedding.from_pretrained(word_embed,freeze=False)  #(num_embeddings, embedding_dim)
+
+        # self.embedding = nn.Embedding(n_vocab, Config.lstm_embed, padding_idx=n_vocab - 1)
+        self.dropout = nn.Dropout(p=self.dropout)  # dropout训练
+        self.lstm = nn.GRU(self.embed_size, hidden_size, self.num_layers,
+                            bidirectional=True, batch_first=True)
+
+    def forward(self, input_ids, mask=None):
+
+        out = self.embedding(input_ids)
+        # out = self.dropout(emb)
+        # print(out,out[:3])
+        H, _ = self.lstm(out)  # [batch_size, seq_len, hidden_size * num_direction]=[128, 32, 256]
+
+        return H
+
+
+
+class TanhAtt(nn.Module):
+    def __init__(self, hidden_size):
+        super(TanhAtt, self).__init__()
+        self.tanh1 = nn.Tanh()
+        self.w = nn.Parameter(torch.zeros(hidden_size * 2))
+
+    def forward(self, H, attention_masks):
+        M = self.tanh1(H)
+        alpha = torch.matmul(M, self.w) #(B,T)
+        infinity_tensor = -1e20 * torch.ones_like(alpha)
+        alpha_new = torch.where(attention_masks>0,alpha,infinity_tensor)
+        alpha = F.softmax(alpha_new, dim=1).unsqueeze(-1)  # [B, T, 1]
+        out = H * alpha  # [128, 32, 256]
+        out = torch.sum(out, 1)  # [128, 256]
+
+        return out, alpha
+
+
+class BiGRUFC(nn.Module):
     def __init__(self, data_name, seed):
-        super(BertFTatt, self).__init__()
-        self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased', num_labels=Config.NUM_LABELS[data_name])
-        self.ffn = nn.Linear(self.bert.config.hidden_size, 2)
+        super(BiGRUFC, self).__init__()
 
-        self.model_name = "bert-base-uncased"
-        self.model_shortcut = "b-ft-att"
+        self.model_shortcut = "gru"
+        self.att_label_type = None  #cate
         self.data_name = data_name
+        self.seed = seed
+
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        self.batch_size = 64
-        self.lr = 1e-5
         self.weight_decay = 0.001
         self.warm_up = 0.1
+        self.batch_size = 64
+        self.lr = 1e-5
         self.patience = 3
         self.epochs = 20
         self.max_len = 80
-        self.seed = seed
         self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}.pt"
 
-    def forward(self, input_ids, input_mask, labels=None):
-        outputs = self.bert(input_ids,
-                            token_type_ids=None,
-                            attention_mask=input_mask,
-                            output_hidden_states=True,
-                            output_attentions=True)
-        print("output=====")
-        print(outputs.size())
-        z0 = outputs.hidden_states[-1][:, 0, :]  # the hidden_states of [CLS]
+        self.hidden_size = 100
 
 
-        logits = self.ffn(z0)
-        probs = nn.functional.softmax(logits,dim=1)
-        # print(probs.size())  # torch.Size([28, 2])
-        # print(labels.size())  # torch.Size([28])
-        loss = nn.functional.cross_entropy(probs, labels)
-        return probs,loss
+        self.gru = BiGRU(data_name, self.hidden_size)
+        self.dropout = nn.Dropout(p=0.3)
+        self.fc = nn.Linear(self.hidden_size * 2, Config.NUM_LABELS[data_name])
+
+    def forward(self, x, mask, labels=None, haslabel=True):
+        H = self.gru(x, mask)  # [batch_size, seq_len, hidden_size * num_direction]=[32, 50, 256]
+        logits = self.fc(H)  # [128, 64]
+
+        if haslabel:
+            loss = torch.nn.functional.cross_entropy(logits, labels)
+            return {
+                'loss': loss,
+                'logits': nn.functional.softmax(logits,dim=1),
+                'label': labels,
+                "prediction":logits.argmax(1)
+                }
+        else:
+            return {
+                'logits': nn.functional.softmax(logits,dim=1),
+                "prediction": logits.argmax(1)
+            }
+
+
+
+
+class BiGRUAtt(nn.Module):
+    def __init__(self, data_name, att_label_type, seed):
+        super(BiGRUAtt, self).__init__()
+
+        self.model_shortcut = "gru-att"
+        self.att_label_type = "lexicon"  #cate
+        self.data_name = data_name
+        self.seed = seed
+        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        self.weight_decay = 0.001
+        self.warm_up = 0.1
+        self.batch_size = 64
+        self.lr = 1e-5
+        self.patience = 3
+        self.epochs = 20
+        self.max_len = 80
+        self.save_model_path = f"saved_model/{data_name}/{self.model_shortcut}_{str(self.lr)}_{str(seed)}_{self.att_label_type}.pt"
+        self.lamda = 0.2
+        self.hidden_size = 100
+        self.gru = BiGRU(data_name, self.hidden_size)
+        self.att = TanhAtt(self.hidden_size)
+        self.dropout = nn.Dropout(p=0.3)
+        self.fc = nn.Linear(self.hidden_size * 2, Config.NUM_LABELS[data_name])
+        self.skew = 2
+
+    @staticmethod
+    def normalize_attention(self, att_label):
+        att_label = torch.exp(self.skew * att_label)
+        att_sum = torch.sum(att_label,dim=1, keepdim=True)
+        normalized_att = att_label/att_sum
+        return normalized_att
+
+
+    def forward(self, x, mask, labels=None, haslabel=True):
+        att_weight = mask[:,:,0]
+        att_weight = self.normalize_attention(att_weight)
+        att_label = mask[:,:,1]
+        att_label = self.normalize_attention(att_label)
+        H = self.gru(x, mask)  # [batch_size, seq_len, hidden_size * num_direction]=[32, 50, 256]
+        out, alpha = self.att(H, mask)  # [B, hidden_size * 2]
+        out = self.dropout(out)
+        logits = self.fc(out)  # [128, 64]
+
+        if haslabel:
+            loss_class = torch.nn.functional.cross_entropy(logits, labels)
+
+            loss_attention_flat = torch.nn.functional.mse_loss(input=alpha.reshape(self.batch_size*self.max_len, -1),
+                                                               target=att_label.reshape(self.batch_size*self.max_len, -1),
+                                                               reduce=False)
+            loss_attention_flat = att_weight.reshape(self.batch_size*self.max_len,-1) * loss_attention_flat
+            loss_attention_sen = loss_attention_flat.reshape(self.batch_size, -1)
+            loss_attention = torch.sum(loss_attention_sen, dim=1)
+
+            loss_sum = loss_class*(1-self.lamda) + loss_attention*(self.lamda)
+
+            return {
+                'loss': loss_sum,
+                'loss_detail': torch.tensor([loss_class, loss_attention]),
+                'logits': nn.functional.softmax(logits,dim=1),
+                'label': labels,
+                "prediction":logits.argmax(1),
+                "alpha": alpha
+                }
+        else:
+            return {
+                'logits': nn.functional.softmax(logits,dim=1),
+                'label': labels,
+                "prediction":logits.argmax(1),
+                "alpha":alpha
+                }
+
+    @staticmethod
+    def compute_metrics(pred,labels):
+        return {
+            'acc': (labels == pred).sum() / len(labels)
+        }
